@@ -1,0 +1,34 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REDIS_URL=redis://redis:6379
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - LINEAR_API_KEY=${LINEAR_API_KEY}
+      - FRONTEND_URL=http://frontend:3000
+    depends_on:
+      - redis
+    volumes:
+      - ./backend/memory:/app/memory
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://backend:8000
+    depends_on:
+      - backend
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+
+volumes:
+  redis-data:

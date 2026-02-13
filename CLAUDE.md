@@ -28,15 +28,15 @@ velocity/
 │   ├── tests/                   # pytest tests
 │   ├── memory/                  # Persistent product knowledge (file-based)
 │   ├── pyproject.toml
-│   ├── Dockerfile
-│   └── docker-compose.yml
+│   └── Dockerfile
 ├── frontend/
 │   ├── app/                     # Next.js App Router pages
 │   ├── components/              # React components (chat/, sidebar/, ui/)
 │   ├── hooks/                   # Custom hooks (useChat, useAgentStream)
 │   ├── lib/                     # API client, types, utilities
 │   ├── package.json
-│   └── next.config.js
+│   └── next.config.ts
+├── docker-compose.yml           # Backend + Frontend + Redis
 ├── ARCHITECTURE.md              # Full system design (source of truth)
 ├── PRD.md                       # Product requirements
 └── CLAUDE.md                    # This file
