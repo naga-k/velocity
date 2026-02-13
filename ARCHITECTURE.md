@@ -148,7 +148,7 @@ These principles govern every architectural decision. When in doubt, refer back 
 | Choice | Why | Alternative Considered |
 |--------|-----|----------------------|
 | **FastAPI (Python)** | Long-running agent tasks exceed Vercel's timeout limits. FastAPI handles async natively, streams SSE, and has excellent typing. Python aligns with Claude Agent SDK. | Express.js — Claude Agent SDK is Python/TS, but Python has better data science tooling if we need it |
-| **Claude Agent SDK (Python)** | The official agent harness (renamed from Claude Code SDK). `ClaudeSDKClient` for continuous conversations, `query()` for one-off tasks. Built-in tools (Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch), subagent orchestration via `AgentDefinition` + `Task` tool, MCP integration via `mcp_servers` config, hooks for pre/post tool use, streaming via `include_partial_messages`, session resume/fork, `max_budget_usd` for cost control, `output_format` for structured JSON output. Install: `pip install claude-agent-sdk`. | Raw Anthropic API — too much boilerplate for agent orchestration |
+| **Claude Agent SDK (Python)** | The official agent harness (renamed from Claude Code SDK). `ClaudeSDKClient` for continuous conversations, `query()` for one-off tasks. Built-in tools (Read, Write, Edit, Bash, Glob, Grep, WebSearch, WebFetch), subagent orchestration via `AgentDefinition` + `Task` tool, MCP integration via `mcp_servers` config, hooks for pre/post tool use, streaming via `include_partial_messages`, session resume/fork, `max_budget_usd` for cost control, `output_format` for structured JSON output. Install: `uv add claude-agent-sdk`. | Raw Anthropic API — too much boilerplate for agent orchestration |
 | **Redis** | In-memory speed for session state, conversation cache, and rate limiting. Sub-millisecond latency. Already proven for agent memory at scale. | Just SQLite — too slow for real-time session state |
 | **SQLite (hackathon) → PostgreSQL (production)** | Conversation history, user sessions, integration configs. SQLite for zero-config hackathon; Postgres for cloud. | MongoDB — SQL is simpler for relational session data |
 
@@ -725,7 +725,13 @@ backend/
 │   ├── decisions/
 │   ├── insights/
 │   └── entity-index.json
-├── requirements.txt
+├── tests/                      # pytest tests (pytest-asyncio + httpx)
+│   ├── conftest.py             # Shared fixtures (async client, mocks)
+│   ├── test_health.py
+│   ├── test_sessions.py
+│   ├── test_chat.py
+│   └── test_models.py
+├── pyproject.toml              # Project metadata + deps (managed by uv)
 ├── Dockerfile
 └── docker-compose.yml          # Backend + Redis (optional for hackathon)
 ```
@@ -1291,7 +1297,7 @@ LOG_LEVEL=INFO
 - Figma integration
 - Any GTM-specific agents (PM-only for MVP)
 - Mobile responsiveness (desktop demo only)
-- Automated testing suite (manual testing only)
+- Exhaustive test coverage (focused regression tests, not 100% coverage)
 
 ---
 

@@ -4,7 +4,7 @@ Agentic AI tool for startup PMs powered by Claude Opus 4.6. Connects to existing
 
 ## Tech Stack
 
-- **Backend:** Python 3.12+, FastAPI, Claude Agent SDK
+- **Backend:** Python 3.12+, FastAPI, Claude Agent SDK, uv (package manager)
 - **Frontend:** Next.js 15 (App Router), TypeScript, Tailwind CSS, shadcn/ui
 - **Infrastructure:** Redis (session state/cache), SQLite (hackathon) / PostgreSQL (prod), Docker
 - **AI Models:** Opus 4.6 (orchestrator + prioritization + doc agents), Sonnet 4.5 (research + backlog agents)
@@ -25,8 +25,9 @@ velocity/
 │   │       ├── chat.py          # POST /api/chat → SSE stream
 │   │       ├── sessions.py      # Session CRUD
 │   │       └── health.py        # Health check
+│   ├── tests/                   # pytest tests
 │   ├── memory/                  # Persistent product knowledge (file-based)
-│   ├── requirements.txt
+│   ├── pyproject.toml
 │   ├── Dockerfile
 │   └── docker-compose.yml
 ├── frontend/
@@ -46,8 +47,11 @@ velocity/
 ### Backend
 ```bash
 cd backend
-pip install -r requirements.txt        # Install dependencies
-uvicorn app.main:app --reload --port 8000  # Run dev server
+uv sync                                    # Install dependencies (creates .venv automatically)
+uv run uvicorn app.main:app --reload --port 8000  # Run dev server
+uv run pytest                              # Run tests
+uv run pytest -x                           # Run tests, stop on first failure
+uv add <package>                           # Add a dependency
 ```
 
 ### Frontend
@@ -106,11 +110,18 @@ docker compose down                     # Stop all services
 - shadcn/ui for base components — don't build from scratch
 - Tailwind for styling — no CSS modules or styled-components
 
+### Testing
+- Test-driven development — write tests alongside implementation
+- Backend: pytest + pytest-asyncio + httpx (`AsyncClient` with `ASGITransport` for FastAPI)
+- Frontend: vitest for component and hook tests
+- Mock external services (Anthropic API, Redis, MCP) in tests — tests must run without API keys
+- Run `uv run pytest` (backend) and `npm test` (frontend) before committing
+
 ### General
 - No over-engineering — minimal abstractions, no premature generalization
 - ARCHITECTURE.md is the source of truth for all design decisions
 - No authentication for hackathon (single-user demo)
-- Manual testing only — no test suite for hackathon scope
+- `uv` for Python package management — no pip, no requirements.txt
 
 ## Key References
 
