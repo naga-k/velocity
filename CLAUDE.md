@@ -91,7 +91,7 @@ Consumed by: `sse_bridge.py` → `routes/chat.py` → `EventSourceResponse` → 
 cd backend
 uv sync                                    # Install deps (test deps via [dependency-groups] dev)
 uv run uvicorn app.main:app --reload --port 8000  # Run dev server
-uv run pytest                              # Run tests (40 passing)
+uv run pytest                              # Run tests (58 passing)
 uv run pytest -x                           # Run tests, stop on first failure
 uv add <package>                           # Add a dependency
 ```
@@ -157,6 +157,8 @@ docker compose down                     # Stop all services
 - Backend: pytest + pytest-asyncio + httpx (`AsyncClient` with `ASGITransport` for FastAPI)
 - Frontend: vitest for component and hook tests
 - Mock external services (Anthropic API, Redis, MCP) in tests — tests must run without API keys
+- **When adding a feature, add tests for it. When removing or changing a feature, update or remove the corresponding tests.** Tests must stay in sync with the code — no stale tests, no untested paths.
+- Test error paths, not just happy paths — SDK exceptions, validation failures, disconnects
 - Run `uv run pytest` (backend) and `npm test` (frontend) before committing
 
 ### General

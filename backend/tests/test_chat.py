@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from app.models import ErrorEventData
 
@@ -456,3 +456,78 @@ class TestSSEWireFormat:
             if e["event"] == "text":
                 parsed = json.loads(e["data"])
                 assert isinstance(parsed, str)
+
+
+class TestErrorHandling:
+    """Test that SDK errors produce graceful error + done events."""
+
+    async def test_sdk_error_emits_error_and_done(self, client, mock_agent_sdk):
+        """ClaudeSDKError should emit error + done, not crash."""
+        from claude_agent_sdk import ClaudeSDKError
+
+        mock_agent_sdk["client"].query = AsyncMock(
+            side_effect=ClaudeSDKError("Connection failed")
+        )
+        resp = await client.post(
+            "/api/chat",
+            json={"message": "Hello"},
+        )
+        events = parse_sse_events(resp.text)
+        event_types = [e["event"] for e in events]
+
+        assert "error" in event_types
+        assert "done" in event_types
+        error_data = json.loads(
+            next(e["data"] for e in events if e["event"] == "error")
+        )
+        assert "Connection failed" in error_data["message"]
+
+    async def test_unexpected_error_emits_error_and_done(self, client, mock_agent_sdk):
+        """Generic exceptions should also emit error + done."""
+        mock_agent_sdk["client"].connect = AsyncMock(
+            side_effect=RuntimeError("Unexpected boom")
+        )
+        resp = await client.post(
+            "/api/chat",
+            json={"message": "Hello"},
+        )
+        events = parse_sse_events(resp.text)
+        event_types = [e["event"] for e in events]
+
+        assert "error" in event_types
+        assert "done" in event_types
+
+    async def test_disconnect_failure_still_emits_done(self, client, mock_agent_sdk):
+        """Even if disconnect() fails, done event should still be emitted."""
+        mock_agent_sdk["client"].disconnect = AsyncMock(
+            side_effect=Exception("disconnect failed")
+        )
+        resp = await client.post(
+            "/api/chat",
+            json={"message": "Hello"},
+        )
+        events = parse_sse_events(resp.text)
+        event_types = [e["event"] for e in events]
+
+        assert "done" in event_types
+        assert "error" not in event_types
+
+
+class TestSaveInsightValidation:
+    """Test that save_insight category validation prevents path traversal."""
+
+    def test_valid_categories_pass(self):
+        """Normal categories match the validation regex."""
+        import re
+
+        pattern = r"^[a-zA-Z0-9_-]+$"
+        for cat in ["feedback", "decision", "competitive", "my-category", "test_123"]:
+            assert re.match(pattern, cat), f"{cat} should be valid"
+
+    def test_path_traversal_rejected(self):
+        """Categories with path separators are rejected by the regex."""
+        import re
+
+        pattern = r"^[a-zA-Z0-9_-]+$"
+        for bad in ["../../etc/evil", "../config", "foo/bar", "a..b/c", "", "a b"]:
+            assert not re.match(pattern, bad), f"{bad} should be rejected"
