@@ -1,0 +1,57 @@
+flowchart LR
+    subgraph Input["User Input"]
+        Msg["User Message"]
+        Ctx["Session Context"]
+    end
+
+    subgraph ContextBuilding["Context Assembly"]
+        Load["Load Session State · Redis"]
+        LoadMem["Load Relevant Memory · just-in-time"]
+        IntStatus["Check Integration Status"]
+    end
+
+    subgraph Planning["Orchestrator Planning"]
+        Classify["Classify Intent"]
+        Plan["Create Execution Plan"]
+        Budget["Allocate Token Budget"]
+    end
+
+    subgraph Execution["Subagent Execution"]
+        direction TB
+        Parallel["Parallel Tasks"]
+        Sequential["Sequential Tasks"]
+        Parallel --> Sequential
+    end
+
+    subgraph MCPCalls["MCP Tool Calls"]
+        direction TB
+        Call["Call External API"]
+        Cache["Check/Set Cache"]
+        Retry["Retry on Failure"]
+        Call --> Cache
+        Call --> Retry
+    end
+
+    subgraph Synthesis["Response Synthesis"]
+        Combine["Combine Results"]
+        Ground["Ground in Evidence"]
+        Cite["Attach Citations"]
+        Format["Format for Streaming"]
+    end
+
+    subgraph Output["Output"]
+        Stream["SSE Stream to Frontend"]
+        MemWrite["Write to Memory"]
+        SessionUpdate["Update Session State"]
+    end
+
+    Input --> ContextBuilding
+    ContextBuilding --> Planning
+    Planning --> Execution
+    Execution --> MCPCalls
+    MCPCalls --> Synthesis
+    Synthesis --> Output
+
+    style Planning fill:#7c3aed,color:#fff
+    style Execution fill:#0ea5e9,color:#fff
+    style Synthesis fill:#059669,color:#fff

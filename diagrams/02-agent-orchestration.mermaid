@@ -1,0 +1,64 @@
+sequenceDiagram
+    actor User
+    participant FE as Frontend
+    participant API as FastAPI
+    participant Orch as Orchestrator Opus 4.6
+    participant RA as Research Agent Sonnet
+    participant BA as Backlog Agent Sonnet
+    participant PA as Prioritization Agent Opus
+    participant Slack as Slack MCP
+    participant Linear as Linear MCP
+    participant Mem as Memory
+
+    User->>FE: What should we prioritize next sprint?
+    FE->>API: POST /api/chat
+    API->>Orch: message + session context
+
+    Note over Orch: STEP 1 Classify intent → prioritization
+
+    Note over Orch: STEP 2 Plan → research + backlog parallel then prioritize
+
+    Orch->>FE: SSE thinking
+
+    par Parallel execution
+        Orch->>RA: Find feedback and discussions
+        RA->>FE: SSE agent_activity research running
+        RA->>Slack: slack_search sprint priorities
+        Slack-->>RA: 8 relevant messages
+        RA->>Slack: slack_search user feedback
+        Slack-->>RA: 5 feedback items
+        RA-->>Orch: Research Brief JSON
+        RA->>FE: SSE agent_activity research completed
+
+    and
+        Orch->>BA: Get current project state
+        BA->>FE: SSE agent_activity backlog running
+        BA->>Linear: list_issues todo + in_progress
+        Linear-->>BA: 23 tickets
+        BA->>Linear: get_current_cycle
+        Linear-->>BA: Sprint data + velocity
+        BA-->>Orch: Backlog State JSON
+        BA->>FE: SSE agent_activity backlog completed
+    end
+
+    Note over Orch: STEP 3 Sequential — needs both results
+
+    Orch->>PA: Rank priorities + research + backlog
+    PA->>FE: SSE agent_activity prioritization running
+    Note over PA: RICE scoring + cross-reference evidence
+    PA-->>Orch: Ranked list with evidence
+    PA->>FE: SSE agent_activity prioritization completed
+
+    Note over Orch: STEP 4 Synthesize final response
+
+    Orch->>FE: SSE text streaming
+    Orch->>FE: SSE citation Slack source
+    Orch->>FE: SSE citation Linear source
+    Orch->>FE: SSE text streaming
+
+    Note over Orch: STEP 5 Update memory
+
+    Orch->>Mem: Write insights + decision context
+    Orch->>FE: SSE done
+
+    FE->>User: Rendered response with source cards

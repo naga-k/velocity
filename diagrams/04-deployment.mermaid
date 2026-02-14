@@ -1,0 +1,45 @@
+graph TB
+    subgraph Local["Local Development"]
+        direction TB
+        DockerCompose["docker-compose up"]
+
+        subgraph Containers["Docker Containers"]
+            FELocal["Frontend · localhost:3000"]
+            BELocal["Backend · localhost:8000"]
+            RedisLocal["Redis · localhost:6379"]
+        end
+
+        MemoryVol["./memory/ bind mount"]
+
+        DockerCompose --> FELocal
+        DockerCompose --> BELocal
+        DockerCompose --> RedisLocal
+        BELocal --> MemoryVol
+    end
+
+    subgraph Cloud["Cloud · Hackathon Demo"]
+        direction TB
+
+        Vercel["Vercel · Next.js Frontend"]
+        Railway["Railway · FastAPI Backend"]
+        ManagedRedis["Upstash · Managed Redis"]
+        PV["Persistent Volume · /memory/"]
+
+        Vercel -->|HTTPS| Railway
+        Railway --> ManagedRedis
+        Railway --> PV
+    end
+
+    subgraph APIs["External APIs"]
+        Anthropic["Anthropic API"]
+        SlackExt["Slack API"]
+        LinearExt["Linear API"]
+    end
+
+    BELocal --> APIs
+    Railway --> APIs
+
+    style Local fill:#f0fdf4,stroke:#16a34a
+    style Cloud fill:#eff6ff,stroke:#2563eb
+    style Vercel fill:#000,color:#fff
+    style Railway fill:#7c3aed,color:#fff

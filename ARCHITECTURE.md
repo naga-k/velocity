@@ -1,9 +1,25 @@
 # Architecture: AI PM Agent
 
-**Status:** Draft v2 — pre-build scoping document (revised with latest SDK patterns)
-**Last updated:** Feb 12, 2026
-**Hackathon deadline:** Feb 16, 3:00 PM EST (~3.5 days remaining)
+**Status:** v3 — updated to reflect Track A implementation (Claude Agent SDK merged)
+**Last updated:** Feb 14, 2026
+**Hackathon deadline:** Feb 16, 3:00 PM EST (~1.5 days remaining)
 **Team:** Solo
+
+---
+
+## v3 Revision Summary (Feb 14, 2026)
+
+Track A (Agent SDK + MCP) is **merged to main** and working. Updated this doc to reflect what's actually built vs. what was planned. Key changes:
+
+**1. No `allowed_tools` whitelist.** Removed — was blocking MCP tool discovery. `bypassPermissions` mode handles everything.
+
+**2. Fresh client per query, no session reuse.** SDK resume is broken (returns 0-token empty responses). Each message creates a fresh `ClaudeSDKClient`. Upstream fix submitted as PR #572.
+
+**3. SDK fork dependency.** Using `naga-k/claude-agent-sdk-python` branch `fix/558-message-buffer-deadlock` to fix a buffer deadlock bug. Installed via `[tool.uv.sources]` git override.
+
+**4. Three-layer bridge pattern.** `routes/chat.py` → `agent.py generate_response()` → `sse_bridge.py`. Each layer is independently testable. 58 backend tests passing.
+
+**5. Duplicate text suppression.** SDK emits both StreamEvent deltas and AssistantMessage TextBlocks. `has_streamed_text` flag prevents double-emitting.
 
 ---
 
@@ -175,128 +191,101 @@ The orchestrator is NOT a custom Python class we build. It IS Claude (Opus 4.6) 
 Claude autonomously decides when to invoke subagents based on each subagent's `description` field, or we can explicitly request them via the prompt.
 
 ```python
-# REAL CODE — Using Claude Agent SDK (Feb 2026 API)
-import asyncio
+# Actual implementation — see backend/app/agent.py for full source
 from claude_agent_sdk import (
-    ClaudeSDKClient, ClaudeAgentOptions, AgentDefinition,
-    tool, create_sdk_mcp_server,
-    AssistantMessage, TextBlock, ToolUseBlock, StreamEvent, ResultMessage
+    AgentDefinition, AssistantMessage, ClaudeAgentOptions, ClaudeSDKClient,
+    ClaudeSDKError, ResultMessage, TextBlock, ToolResultBlock, ToolUseBlock,
+    create_sdk_mcp_server, tool,
 )
+from claude_agent_sdk.types import StreamEvent, ThinkingConfigAdaptive
 
 # --- Custom PM tools (in-process MCP server) ---
+
+@tool("read_product_context", "Read the current product context and accumulated knowledge", {})
+async def read_product_context(args: dict) -> dict:
+    context_path = MEMORY_DIR / "product-context.md"
+    if context_path.exists():
+        text = context_path.read_text()
+    else:
+        text = "(No product context file found.)"
+    return {"content": [{"type": "text", "text": text}]}
 
 @tool("save_insight", "Save a product insight to persistent memory", {
     "category": str,  # "feedback" | "decision" | "metric" | "competitive"
     "content": str,
-    "sources": str,  # comma-separated source URLs
+    "sources": str,   # comma-separated source URLs
 })
-async def save_insight(args):
-    # Write to file-based memory
+async def save_insight(args: dict) -> dict:
     category = args["category"]
-    with open(f"./memory/insights/{category}.md", "a") as f:
+    if not re.match(r"^[a-zA-Z0-9_-]+$", category):  # Path traversal protection
+        return {"content": [{"type": "text", "text": f"Invalid category: {category}"}]}
+    insights_dir = MEMORY_DIR / "insights"
+    insights_dir.mkdir(parents=True, exist_ok=True)
+    target = insights_dir / f"{category}.md"
+    with open(target, "a") as f:
         f.write(f"\n---\n{args['content']}\nSources: {args['sources']}\n")
     return {"content": [{"type": "text", "text": f"Insight saved to {category}"}]}
 
-@tool("read_product_context", "Read the current product context and accumulated knowledge", {})
-async def read_product_context(args):
-    with open("./memory/product-context.md", "r") as f:
-        context = f.read()
-    return {"content": [{"type": "text", "text": context}]}
-
-pm_tools = create_sdk_mcp_server(
-    name="pm-memory", version="1.0.0",
-    tools=[save_insight, read_product_context]
+_pm_tools_server = create_sdk_mcp_server(
+    name="pm_tools",
+    tools=[read_product_context, save_insight],
 )
 
 # --- Subagent Definitions ---
+# Note: No `tools` whitelist — bypassPermissions mode allows all tools.
+# Subagents inherit access to MCP servers from the orchestrator.
 
 AGENTS = {
     "research": AgentDefinition(
-        description="Research specialist. Use for finding discussions, feedback, and context from Slack, web, and Notion. Use when the user asks about what people are saying, what feedback exists, or needs background research.",
-        prompt="""You are a research agent for a PM team. Find and synthesize information from Slack, web, and Notion.
-Return structured findings with sources. Be thorough but concise. Always cite where information came from.""",
-        tools=["mcp__slack__search_messages", "mcp__slack__read_thread",
-               "mcp__web__web_search", "WebFetch", "Read"],
+        description="Research specialist. Use for finding discussions, feedback, and "
+                    "context from Slack, web, and other sources.",
+        prompt="You are a research agent for a PM team. Find and synthesize "
+               "information from Slack, web, and other sources.\n"
+               "Return structured findings with sources. Be thorough but concise.",
         model="sonnet",
     ),
     "backlog": AgentDefinition(
-        description="Backlog analyst. Use for reading project state from Linear: current sprint, tickets, blockers, velocity. Use when the user asks about what's in the backlog, sprint status, or ticket details.",
-        prompt="""You are a backlog analyst. Read and structure project state from Linear.
-Summarize ticket status, blockers, velocity, and key metrics. Always include ticket URLs.""",
-        tools=["mcp__linear__search_issues", "mcp__linear__get_issue",
-               "mcp__linear__list_projects", "mcp__linear__get_cycle_status"],
+        description="Backlog analyst. Use for reading project state from Linear: "
+                    "current sprint, tickets, blockers, velocity.",
+        prompt="You are a backlog analyst. Read and structure project state from Linear.\n"
+               "Summarize ticket status, blockers, velocity, and key metrics.",
         model="sonnet",
     ),
     "prioritization": AgentDefinition(
-        description="Prioritization expert. Use when the user needs help ranking, scoring, or deciding between options. Works with outputs from other agents to apply frameworks like RICE, impact-effort, or custom scoring.",
-        prompt="""You are a prioritization expert. Given research findings and backlog state, help rank and score items.
-Apply RICE or impact-effort frameworks. Cite evidence for and against each option. Flag trade-offs and open questions.
-Be opinionated but transparent about uncertainty.""",
-        tools=["Read"],  # Read-only — works with other agents' outputs
+        description="Prioritization expert. Use when the user needs help ranking, "
+                    "scoring, or deciding between options.",
+        prompt="You are a prioritization expert. Apply RICE or impact-effort frameworks.\n"
+               "Cite evidence for and against each option. Flag trade-offs.",
         model="opus",
     ),
     "doc-writer": AgentDefinition(
-        description="Document generator. Use for creating PRDs, stakeholder updates, one-pagers, sprint summaries. Produces publication-ready markdown with citations.",
-        prompt="""You are a document specialist for a PM team. Generate well-structured, grounded documents.
-Include citations for all claims. Write for the specified audience. Keep it concise and actionable.""",
-        tools=["Read", "Write", "mcp__pm-memory__save_insight"],
+        description="Document generator. Use for creating PRDs, stakeholder updates, "
+                    "sprint summaries. Produces publication-ready markdown.",
+        prompt="You are a document specialist. Generate well-structured, grounded documents.\n"
+               "Include citations for all claims. Keep it concise and actionable.",
         model="opus",
     ),
 }
 
-# --- Main Application ---
+# --- Options factory ---
+# MCP servers are conditionally added based on available credentials.
+# No `allowed_tools` whitelist — bypassPermissions handles it.
 
-async def create_pm_agent() -> ClaudeSDKClient:
-    """Create and configure the PM agent with all subagents and MCP servers."""
-    options = ClaudeAgentOptions(
-        # Core agent config
-        system_prompt="""You are an AI PM agent that helps product managers make better decisions.
-You have access to specialized subagents for research, backlog analysis, prioritization, and document generation.
-Always ground your responses in real data from integrations. Cite sources. Be opinionated but transparent.
-When a task requires multiple types of information, run subagents in parallel when possible.""",
-        model="opus",  # Orchestrator uses Opus 4.6
-
-        # Tools: Task is required for subagent invocation
-        allowed_tools=[
-            "Task",  # Required: enables subagent invocation
-            "Read", "Write", "Glob", "Grep",  # File operations
-            "WebSearch", "WebFetch",  # Web access
-            "mcp__pm-memory__save_insight",
-            "mcp__pm-memory__read_product_context",
-            "mcp__slack__search_messages", "mcp__slack__read_thread",
-            "mcp__linear__search_issues", "mcp__linear__get_issue",
-        ],
-
-        # Subagents
+def _build_options() -> ClaudeAgentOptions:
+    return ClaudeAgentOptions(
+        system_prompt=SYSTEM_PROMPT,
+        model=settings.anthropic_model_opus,
         agents=AGENTS,
-
-        # MCP servers
-        mcp_servers={
-            "pm-memory": pm_tools,  # In-process custom tools
-            "slack": {  # Slack MCP (stdio — local process)
-                "command": "npx",
-                "args": ["@anthropic/slack-mcp"],
-                "env": {"SLACK_BOT_TOKEN": os.environ["SLACK_BOT_TOKEN"]}
-            },
-            "linear": {  # Linear MCP (stdio)
-                "command": "npx",
-                "args": ["@anthropic/linear-mcp"],
-                "env": {"LINEAR_API_KEY": os.environ["LINEAR_API_KEY"]}
-            },
-        },
-
-        # Streaming: get real-time token events
-        include_partial_messages=True,
-
-        # Cost control
-        max_budget_usd=2.0,  # Per-session budget
-
-        # Permission mode
-        permission_mode="bypassPermissions",  # For hackathon — auto-approve all tools
+        mcp_servers=_build_mcp_servers(),          # pm_tools + slack/linear if configured
+        permission_mode="bypassPermissions",        # Hackathon — auto-approve all tools
+        max_turns=settings.max_turns,
+        max_budget_usd=settings.max_budget_per_session_usd,
+        include_partial_messages=True,              # Stream partial text/thinking deltas
+        thinking=ThinkingConfigAdaptive(type="adaptive"),
+        cwd=str(MEMORY_DIR.parent),
+        env={"ANTHROPIC_API_KEY": settings.anthropic_api_key},
+        stderr=_stderr_callback,
     )
-
-    client = ClaudeSDKClient(options=options)
-    return client
 ```
 
 **Key insight:** We don't write orchestration logic. Claude (Opus 4.6) IS the orchestrator. It reads the subagent descriptions and autonomously decides when to delegate. The SDK handles the agent loop, tool execution, context management, and compaction.
@@ -453,14 +442,15 @@ Subagents are invoked via the SDK's `Task` tool. Claude automatically uses it wh
 # 5. Orchestrator receives result and continues its own reasoning
 
 # Detecting subagent events in the stream:
-async for message in client.receive_messages():
-    if isinstance(message, StreamEvent):
-        if message.parent_tool_use_id:
-            # This event is from inside a subagent
-            print(f"Subagent event: {message.event}")
+async for msg in client.receive_response():
+    if isinstance(msg, StreamEvent):
+        if msg.parent_tool_use_id:
+            # This event is from inside a subagent — we skip these
+            # to avoid streaming subagent text to the frontend
+            continue
 
-    if isinstance(message, AssistantMessage):
-        for block in message.content:
+    if isinstance(msg, AssistantMessage):
+        for block in msg.content:
             if isinstance(block, ToolUseBlock) and block.name == "Task":
                 agent_type = block.input.get("subagent_type")
                 print(f"Orchestrator invoking subagent: {agent_type}")
@@ -470,7 +460,8 @@ async for message in client.receive_messages():
 - Subagents CANNOT spawn their own subagents (no nested delegation)
 - Don't include `Task` in a subagent's `tools` array
 - Subagent transcripts persist independently and survive main conversation compaction
-- Subagents can be resumed using their `agentId` in a subsequent `query()` call
+- **Resume is currently broken** — SDK returns empty 0-token responses when using `resume=session_id`. We use fresh-client-per-query as a workaround. See [SDK PR #572](https://github.com/anthropics/claude-agent-sdk-python/pull/572) for the upstream fix.
+- We also depend on a fork branch (`fix/558-message-buffer-deadlock`) that fixes a buffer deadlock bug (#558) in the SDK's message stream
 
 ---
 
@@ -725,12 +716,12 @@ backend/
 │   ├── decisions/
 │   ├── insights/
 │   └── entity-index.json
-├── tests/                      # pytest tests (pytest-asyncio + httpx)
-│   ├── conftest.py             # Shared fixtures (async client, mocks)
-│   ├── test_health.py
-│   ├── test_sessions.py
-│   ├── test_chat.py
-│   └── test_models.py
+├── tests/                      # pytest tests — 58 passing (pytest-asyncio + httpx)
+│   ├── conftest.py             # Shared fixtures (async client, SDK mocks)
+│   ├── test_health.py          # Health endpoint tests
+│   ├── test_sessions.py        # Session CRUD tests
+│   ├── test_chat.py            # SSE streaming, error handling, input validation tests
+│   └── test_models.py          # Pydantic model tests
 ├── pyproject.toml              # Project metadata + deps (managed by uv)
 ├── Dockerfile
 └── docker-compose.yml          # Backend + Redis (optional for hackathon)
@@ -740,115 +731,88 @@ backend/
 
 ### 7.2 API Design
 
-#### Core Endpoints
+#### Core Endpoints (implemented)
 
 ```
-POST   /api/chat                    # Send message, get streaming response
-GET    /api/chat/stream/{session_id} # SSE stream for agent activity
+POST   /api/chat                    # Send message → SSE streaming response
 POST   /api/sessions                # Create new session
 GET    /api/sessions/{id}           # Get session state
 DELETE /api/sessions/{id}           # End session
+GET    /api/health                  # System health check
+```
 
+#### Planned Endpoints (not yet implemented)
+
+```
 GET    /api/integrations            # List configured integrations
 POST   /api/integrations/{provider} # Connect an integration
 DELETE /api/integrations/{provider} # Disconnect
 GET    /api/integrations/{provider}/status # Health check
-
-GET    /api/agents/status           # Current agent activity
-GET    /api/health                  # System health
 ```
 
-#### Chat Endpoint (the core flow — using Claude Agent SDK)
+#### Chat Endpoint (the core flow — actual implementation)
+
+The architecture uses a **three-layer bridge**: `routes/chat.py` → `agent.py` → `sse_bridge.py`.
 
 ```python
-from sse_starlette.sse import EventSourceResponse
-from claude_agent_sdk import (
-    ClaudeSDKClient, AssistantMessage, TextBlock, ToolUseBlock,
-    ToolResultBlock, StreamEvent, ResultMessage
-)
-import json
-
-# Global client registry (one ClaudeSDKClient per active session)
-active_sessions: dict[str, ClaudeSDKClient] = {}
-
+# routes/chat.py — ultra-thin, delegates everything
 @router.post("/api/chat")
-async def chat(request: ChatRequest):
-    """
-    Thin bridge: receives message from frontend, passes to ClaudeSDKClient,
-    bridges StreamEvent messages to frontend via SSE.
-    """
-    # Get or create a ClaudeSDKClient for this session
-    if request.session_id not in active_sessions:
-        client = await create_pm_agent()  # from Section 4.1
-        await client.connect()
-        active_sessions[request.session_id] = client
-
-    client = active_sessions[request.session_id]
-
-    # Send the user's message to the SDK
-    await client.query(request.message)
-
-    # Bridge SDK messages to SSE events for frontend
-    async def event_generator():
-        async for message in client.receive_response():
-            # StreamEvent: real-time partial updates (tokens, tool calls)
-            if isinstance(message, StreamEvent):
-                event = message.event
-                event_type = event.get("type", "")
-
-                # Text delta — streaming tokens
-                if event_type == "content_block_delta":
-                    delta = event.get("delta", {})
-                    if delta.get("type") == "text_delta":
-                        yield {
-                            "event": "text",
-                            "data": json.dumps(delta.get("text", ""))
-                        }
-
-                # Subagent activity tracking
-                if message.parent_tool_use_id:
-                    yield {
-                        "event": "agent_activity",
-                        "data": json.dumps({
-                            "parent_id": message.parent_tool_use_id,
-                            "event": event_type,
-                        })
-                    }
-
-            # AssistantMessage: complete message with content blocks
-            elif isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, ToolUseBlock) and block.name == "Task":
-                        yield {
-                            "event": "agent_activity",
-                            "data": json.dumps({
-                                "agent": block.input.get("subagent_type", "unknown"),
-                                "task": block.input.get("description", ""),
-                                "status": "running"
-                            })
-                        }
-                    elif isinstance(block, TextBlock):
-                        yield {
-                            "event": "text_complete",
-                            "data": json.dumps(block.text)
-                        }
-
-            # ResultMessage: final result with cost/usage
-            elif isinstance(message, ResultMessage):
-                yield {
-                    "event": "done",
-                    "data": json.dumps({
-                        "session_id": message.session_id,
-                        "cost_usd": message.total_cost_usd,
-                        "turns": message.num_turns,
-                        "duration_ms": message.duration_ms,
-                    })
-                }
-
-    return EventSourceResponse(event_generator())
+async def chat(request: ChatRequest) -> EventSourceResponse:
+    event_source = generate_response(
+        message=request.message,
+        session_id=request.session_id,
+        context=request.context,
+    )
+    return EventSourceResponse(
+        stream_sse_events(event_source),
+        media_type="text/event-stream",
+    )
 ```
 
-**Key difference from v1:** FastAPI doesn't orchestrate anything. It's a thin SSE bridge between the Claude Agent SDK and the frontend. All intelligence lives in the SDK configuration (system prompt, subagent definitions, MCP servers).
+```python
+# agent.py — generate_response() is the critical interface
+# Creates a FRESH ClaudeSDKClient per query (no session reuse — see SDK bug notes)
+async def generate_response(message, session_id, context=None):
+    client = ClaudeSDKClient(options=_build_options())
+    try:
+        await client.connect()
+        await client.query(message)
+
+        async for msg in client.receive_response():
+            if isinstance(msg, StreamEvent):
+                # Stream orchestrator text deltas (skip subagent text)
+                if not msg.parent_tool_use_id:
+                    delta = msg.event.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        yield ("text", json.dumps(delta["text"]))
+                    elif delta.get("type") == "thinking_delta":
+                        yield ("thinking", ThinkingEventData(...).model_dump_json())
+
+            elif isinstance(msg, AssistantMessage):
+                for block in msg.content:
+                    if isinstance(block, ToolUseBlock) and block.name == "Task":
+                        yield ("agent_activity", AgentActivityData(...).model_dump_json())
+                    elif isinstance(block, ToolUseBlock):
+                        yield ("tool_call", ToolCallData(...).model_dump_json())
+
+            elif isinstance(msg, ResultMessage):
+                yield ("done", DoneEventData(...).model_dump_json())
+    finally:
+        await client.disconnect()  # Guaranteed cleanup
+```
+
+```python
+# sse_bridge.py — translates tuples to ServerSentEvent objects
+async def stream_sse_events(event_source):
+    async for event_type, json_data in event_source:
+        yield ServerSentEvent(event=event_type, data=json_data)
+```
+
+**Key design decisions:**
+- **Fresh client per query** — SDK resume is broken (returns 0-token empty responses). Each message is an independent turn until upstream is fixed.
+- **Three-layer bridge** — route handler has zero logic, agent layer handles SDK complexity, SSE bridge handles wire format. Each layer is independently testable.
+- **Duplicate text suppression** — StreamEvent deltas and AssistantMessage TextBlocks can emit the same text. `has_streamed_text` flag prevents doubling.
+- **Guaranteed cleanup** — `try/finally` ensures `client.disconnect()` even on exceptions. `done_emitted` flag ensures a `done` event is always sent.
 
 ### 7.3 Streaming Architecture
 
@@ -1226,68 +1190,67 @@ LOG_LEVEL=INFO
 
 ### Day-by-Day Plan
 
-#### Day 3 (Today, Feb 12) — Foundation
+#### Day 3 (Feb 12) — Foundation ✅ DONE
 **Goal: Backend skeleton + orchestrator + one working subagent**
 
-- [ ] Project scaffolding (FastAPI + Next.js monorepo)
-- [ ] Docker Compose setup (backend + Redis)
-- [ ] Claude Agent SDK integration — orchestrator agent running
-- [ ] Linear MCP connection — Backlog Agent can read issues
-- [ ] Basic SSE streaming endpoint working
-- [ ] Minimal chat UI (message input + streaming response)
-- **End of day test:** Ask "What tickets are in the current sprint?" and get a real answer from Linear
+- [x] Project scaffolding (FastAPI + Next.js monorepo)
+- [x] Docker Compose setup (backend + Redis)
+- [x] Basic SSE streaming endpoint working
+- [x] Minimal chat UI (message input + streaming response)
+- [x] Backend tests passing (40 tests)
 
-#### Day 4 (Feb 13) — Agents + Integrations
-**Goal: Multi-agent working, Slack connected, rich responses**
+#### Day 4 (Feb 13) — Agent SDK Integration ✅ DONE
+**Goal: Replace scaffold with Claude Agent SDK, multi-agent orchestration**
 
-- [ ] Slack MCP connection — Research Agent can search messages
-- [ ] Research Agent fully working (Slack + web search)
-- [ ] Prioritization Agent working (takes input from Research + Backlog agents)
-- [ ] Parallel subagent execution
+- [x] Claude Agent SDK integration — orchestrator agent (Opus 4.6) running
+- [x] Subagent definitions: research, backlog, prioritization, doc-writer
+- [x] MCP integration: Slack + Linear (conditional on credentials)
+- [x] Custom PM tools via `@tool` decorator (read_product_context, save_insight)
+- [x] Streaming: text deltas, thinking, agent_activity, tool_call events
+- [x] Adaptive thinking (`ThinkingConfigAdaptive`)
+- [x] SDK bug workarounds: fresh-client-per-query, buffer deadlock fix
+- [x] Error handling: ClaudeSDKError, guaranteed disconnect, done fallback
+- [x] Path traversal protection on save_insight
+- [x] Backend tests passing (58 tests)
+- **Verified:** Subagent dispatch works (backlog agent ran Glob/Grep/Read/Bash tools)
+
+#### Day 5 (Feb 14, today) — Frontend + Deploy
+**Goal: Frontend shows agent activity, deployed for feedback**
+
 - [ ] Agent activity stream (frontend shows what each agent is doing)
 - [ ] Source cards / citations in UI
-- [ ] Basic session persistence (Redis)
-- **End of day test:** Ask "What should we prioritize?" and get a multi-source, cited answer
-
-#### Day 5 (Feb 14) — Polish + Memory + Deploy
-**Goal: Demo-ready, deployed, memory working**
-
-- [ ] Doc Agent (generate PRD or stakeholder update)
-- [ ] File-based product knowledge memory
-- [ ] Memory persistence across sessions
-- [ ] Cloud deployment (Railway + Vercel)
-- [ ] UI polish — loading states, animations, error handling
-- [ ] Integration status panel with "coming soon" badges
-- [ ] End-to-end testing
+- [ ] Cloud deployment (Railway/Fly + Vercel)
+- [ ] UI polish — loading states, thinking indicators, error handling
+- [ ] End-to-end testing on deployed environment
 - **End of day test:** Full demo flow works on cloud deployment
 
 #### Day 6 (Feb 15-16, morning) — Demo Prep
 **Goal: Record demo video, prepare submission**
 
+- [ ] Final UI polish and integration testing
 - [ ] Record 3-minute demo video
 - [ ] Write 100-200 word summary
 - [ ] GitHub repo cleanup (README, .env.example)
-- [ ] Final testing on cloud deployment
 - [ ] Submit before 3:00 PM EST
 
 ### MVP Feature Matrix
 
-| Feature | Must Have | Should Have | Nice to Have |
-|---------|-----------|-------------|--------------|
-| Chat interface with streaming | ✅ | | |
-| Linear integration (Backlog Agent) | ✅ | | |
-| Slack integration (Research Agent) | ✅ | | |
-| Multi-agent orchestration | ✅ | | |
-| Source cards / citations | ✅ | | |
-| Agent activity stream | ✅ | | |
-| Prioritization Agent | | ✅ | |
-| Doc generation (PRD/update) | | ✅ | |
-| Web search integration | | ✅ | |
-| Persistent memory (cross-session) | | ✅ | |
-| Notion integration | | | ✅ |
-| Session history | | | ✅ |
-| "Coming soon" integration badges | | | ✅ |
-| Dark mode | | | ✅ |
+| Feature | Status | Priority |
+|---------|--------|----------|
+| Chat interface with streaming | ✅ Working | Must Have |
+| Claude Agent SDK orchestrator (Opus 4.6) | ✅ Working | Must Have |
+| Subagent orchestration (4 agents defined) | ✅ Working | Must Have |
+| Linear integration (Backlog Agent via MCP) | ✅ Configured | Must Have |
+| Slack integration (Research Agent via MCP) | ✅ Configured | Must Have |
+| Adaptive thinking (extended thinking) | ✅ Working | Must Have |
+| Custom PM tools (memory read/write) | ✅ Working | Must Have |
+| Agent activity stream in UI | 🔧 Backend ready, frontend TODO | Must Have |
+| Source cards / citations in UI | 🔧 TODO | Should Have |
+| Cloud deployment | 🔧 TODO | Must Have |
+| Web search integration | 📋 Planned | Should Have |
+| Notion integration | 📋 Planned | Nice to Have |
+| Session history | 📋 Planned | Nice to Have |
+| E2B sandboxed execution | 📋 Evaluating | Nice to Have |
 
 ### What We're NOT Building
 
@@ -1303,38 +1266,45 @@ LOG_LEVEL=INFO
 
 ## 12. Risk Register & Mitigations
 
-| Risk | Likelihood | Impact | Mitigation |
-|------|-----------|--------|-----------|
-| **Agent responses too slow** (multi-hop subagents add latency) | High | High | Parallelize subagents where possible. Use Sonnet for fast subagents. Set timeouts. Show agent activity so user knows it's working. |
-| **MCP integration breaks during demo** | Medium | High | Cache recent results. Build fallback responses with cached data. Test on actual Linear/Slack data before demo. |
-| **Context rot on long conversations** | Medium | Medium | Aggressive compaction. Subagent isolation. Session memory writes. Keep orchestrator context lean. |
-| **$500 API credits run out** | Medium | Critical | Use Sonnet for high-volume subagents. Cache aggressively. Monitor spend daily. Set per-session token budgets. |
-| **Cloud deployment issues** | Medium | High | Deploy to cloud on Day 5, not last day. Have Docker Compose local fallback for demo. |
-| **Opus 4.6 model availability** | Low | Critical | Fallback to Opus 4.5 or Sonnet 4.5. Agent code should be model-agnostic. |
-| **Scope creep** | High | High | This document IS the scope. If it's not in the Day-by-Day Plan, it doesn't get built. |
+| Risk | Likelihood | Impact | Mitigation | Status |
+|------|-----------|--------|-----------|--------|
+| **Agent responses too slow** (multi-hop subagents add latency) | High | High | Parallelize subagents where possible. Use Sonnet for fast subagents. Set timeouts. Show agent activity so user knows it's working. | Active |
+| **SDK resume broken** (no multi-turn context) | Confirmed | Medium | Fresh client per query. Each message is independent. Context lost between turns. Upstream PR #572 submitted. | Workaround in place |
+| **SDK buffer deadlock** (#558) | Confirmed | High | Using fork branch `fix/558-message-buffer-deadlock`. Draft PR #572 submitted upstream. | Workaround in place |
+| **MCP integration breaks during demo** | Medium | High | Cache recent results. Build fallback responses with cached data. Test on actual Linear/Slack data before demo. | Active |
+| **Context rot on long conversations** | Low (for now) | Medium | Fresh-client-per-query means no context accumulation. When resume is fixed, use aggressive compaction + subagent isolation. | Deferred |
+| **$500 API credits run out** | Medium | Critical | Use Sonnet for high-volume subagents. Cache aggressively. Monitor spend daily. Per-session budget via `max_budget_usd`. | Active |
+| **Cloud deployment issues** | Medium | High | Deploy to cloud on Day 5, not last day. Have Docker Compose local fallback for demo. | Active |
+| **Opus 4.6 model availability** | Low | Critical | Fallback to Sonnet 4.5. Model is configurable via env var. | Active |
+| **Scope creep** | High | High | This document IS the scope. If it's not in the Day-by-Day Plan, it doesn't get built. | Active |
 
 ---
 
-## 13. Open Decisions
+## 13. Decisions Log
 
-These need to be resolved before or during Day 3:
+### Resolved
 
-1. **Monorepo vs separate repos?**
-   - Recommendation: Monorepo. Simpler for solo dev, one git history, easier to deploy.
-   - Structure: `/backend` + `/frontend` + `/memory` at root
+1. **Monorepo vs separate repos?** → **Monorepo.** Structure: `/backend` + `/frontend` at root.
 
-2. **Claude Agent SDK (Python) vs TypeScript SDK?**
-   - Recommendation: Python. Better async support, FastAPI alignment, and the Python SDK is more mature for agent orchestration.
-   - Risk: Next.js is TypeScript. We'll have a Python backend + TypeScript frontend (very common pattern).
+2. **Claude Agent SDK (Python) vs TypeScript SDK?** → **Python.** FastAPI alignment, mature async support. Frontend is TypeScript (standard pattern).
 
-3. **Vercel AI SDK data stream protocol vs custom SSE?**
-   - Recommendation: Use Vercel AI SDK on the frontend (`useChat`), but adapt the FastAPI backend to emit compatible SSE events. Best of both worlds — polished frontend hooks + flexible backend.
+3. **Vercel AI SDK data stream protocol vs custom SSE?** → **Custom SSE with fetch-based parser.** Simpler than adapting Vercel AI SDK's data stream protocol to our FastAPI backend. Custom `useChat` hook is ~50 lines. May revisit if we need AI SDK features later.
 
-4. **How much of Linear/Slack to index upfront vs query on demand?**
-   - Recommendation: Query on demand via MCP. No upfront indexing. This is simpler and more resilient. Cache results in Redis for quick re-access.
+4. **How much of Linear/Slack to index upfront vs query on demand?** → **Query on demand via MCP.** No upfront indexing. MCP servers handle search.
 
-5. **Notion MCP — build custom or use existing?**
-   - Depends on whether a good open-source Notion MCP server exists. Check MCP registry first.
+5. **allowed_tools whitelist vs bypassPermissions?** → **bypassPermissions only, no whitelist.** `allowed_tools` was blocking MCP tools from being discovered. `bypassPermissions` handles everything for hackathon scope.
+
+6. **Session reuse vs fresh client per query?** → **Fresh client per query.** SDK resume is broken (0-token responses). Each message is independent until upstream fix merges.
+
+7. **SDK dependency: upstream vs fork?** → **Fork branch** (`naga-k/claude-agent-sdk-python`, branch `fix/558-message-buffer-deadlock`) via `[tool.uv.sources]` git override. Draft PR #572 submitted upstream. Will switch back to upstream when merged.
+
+### Open
+
+1. **Notion MCP — build custom or use existing?** — Check MCP registry first.
+
+2. **E2B sandboxed execution** — Evaluate for safe tool execution. Could use during hackathon if time permits. See Agent SDK Hosting Guide for sandbox provider options.
+
+3. **Cloud deployment target** — Railway vs Fly.io vs Render for FastAPI backend. Vercel for frontend is decided.
 
 ---
 
