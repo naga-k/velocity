@@ -11,6 +11,7 @@ dependencies = [
     "pydantic-settings>=2.7.0",
     "redis>=5.2.0",
     "python-dotenv>=1.0.0",
+    "claude-agent-sdk>=0.1.36",
 ]
 
 [dependency-groups]

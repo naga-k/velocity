@@ -1,4 +1,4 @@
-"""Tests for chat endpoint — SSE streaming with mocked agent."""
+"""Tests for chat endpoint — SSE streaming with mocked Claude Agent SDK."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ def parse_sse_events(raw: str) -> list[dict]:
 
 
 class TestChatEndpoint:
-    async def test_chat_returns_sse_stream(self, client, mock_anthropic):
+    async def test_chat_returns_sse_stream(self, client, mock_agent_sdk):
         resp = await client.post(
             "/api/chat",
             json={"message": "Hello"},
@@ -41,7 +41,7 @@ class TestChatEndpoint:
         assert resp.status_code == 200
         assert "text/event-stream" in resp.headers.get("content-type", "")
 
-    async def test_chat_emits_text_and_done(self, client, mock_anthropic):
+    async def test_chat_emits_text_and_done(self, client, mock_agent_sdk):
         resp = await client.post(
             "/api/chat",
             json={"message": "Hello"},
@@ -54,7 +54,7 @@ class TestChatEndpoint:
         # done should be last
         assert event_types[-1] == "done"
 
-    async def test_chat_text_is_bare_string(self, client, mock_anthropic):
+    async def test_chat_text_is_bare_string(self, client, mock_agent_sdk):
         resp = await client.post(
             "/api/chat",
             json={"message": "Hello"},
@@ -68,7 +68,7 @@ class TestChatEndpoint:
             # text events should be bare strings
             assert isinstance(parsed, str)
 
-    async def test_chat_text_reconstructs_message(self, client, mock_anthropic):
+    async def test_chat_text_reconstructs_message(self, client, mock_agent_sdk):
         resp = await client.post(
             "/api/chat",
             json={"message": "Hello"},
@@ -79,7 +79,7 @@ class TestChatEndpoint:
         full_text = "".join(json.loads(e["data"]) for e in text_events)
         assert full_text == "Hello from Claude!"
 
-    async def test_chat_done_has_token_usage(self, client, mock_anthropic):
+    async def test_chat_done_has_token_usage(self, client, mock_agent_sdk):
         resp = await client.post(
             "/api/chat",
             json={"message": "Hello"},
@@ -93,7 +93,7 @@ class TestChatEndpoint:
         assert "input" in done_data["tokens_used"]
         assert "output" in done_data["tokens_used"]
 
-    async def test_chat_auto_generates_session_id(self, client, mock_anthropic):
+    async def test_chat_auto_generates_session_id(self, client, mock_agent_sdk):
         """session_id is optional — should not 422."""
         resp = await client.post(
             "/api/chat",
@@ -101,14 +101,14 @@ class TestChatEndpoint:
         )
         assert resp.status_code == 200
 
-    async def test_chat_with_explicit_session_id(self, client, mock_anthropic):
+    async def test_chat_with_explicit_session_id(self, client, mock_agent_sdk):
         resp = await client.post(
             "/api/chat",
             json={"message": "Hello", "session_id": "my-session"},
         )
         assert resp.status_code == 200
 
-    async def test_chat_rejects_empty_message(self, client, mock_anthropic):
+    async def test_chat_rejects_empty_message(self, client, mock_agent_sdk):
         resp = await client.post(
             "/api/chat",
             json={"message": ""},
@@ -132,3 +132,165 @@ class TestChatEndpoint:
         error_data = json.loads(error_event["data"])
         assert "not configured" in error_data["message"].lower()
         assert error_data["recoverable"] is False
+
+
+class TestThinkingEvents:
+    """Test that thinking blocks are emitted as SSE thinking events."""
+
+    async def test_thinking_event_emitted(self, client, mock_agent_sdk):
+        from tests.conftest import (
+            make_mock_result_message,
+            make_mock_thinking_message,
+        )
+
+        mock_agent_sdk["set_messages"]([
+            make_mock_thinking_message(
+                thinking_text="Analyzing the request...",
+                response_text="Here is my answer.",
+            ),
+            make_mock_result_message(),
+        ])
+
+        resp = await client.post(
+            "/api/chat",
+            json={"message": "Prioritize the backlog"},
+        )
+        events = parse_sse_events(resp.text)
+        event_types = [e["event"] for e in events]
+
+        assert "thinking" in event_types
+        thinking_event = next(e for e in events if e["event"] == "thinking")
+        data = json.loads(thinking_event["data"])
+        assert data["text"] == "Analyzing the request..."
+
+    async def test_thinking_then_text(self, client, mock_agent_sdk):
+        from tests.conftest import (
+            make_mock_result_message,
+            make_mock_thinking_message,
+        )
+
+        mock_agent_sdk["set_messages"]([
+            make_mock_thinking_message(
+                thinking_text="Planning...",
+                response_text="The answer is 42.",
+            ),
+            make_mock_result_message(),
+        ])
+
+        resp = await client.post(
+            "/api/chat",
+            json={"message": "What is the answer?"},
+        )
+        events = parse_sse_events(resp.text)
+        event_types = [e["event"] for e in events]
+
+        # thinking should come before text
+        thinking_idx = event_types.index("thinking")
+        text_idx = event_types.index("text")
+        assert thinking_idx < text_idx
+
+
+class TestAgentActivityEvents:
+    """Test that subagent invocations emit agent_activity SSE events."""
+
+    async def test_subagent_emits_agent_activity(self, client, mock_agent_sdk):
+        from tests.conftest import (
+            make_mock_assistant_message,
+            make_mock_result_message,
+            make_mock_subagent_message,
+        )
+
+        mock_agent_sdk["set_messages"]([
+            make_mock_subagent_message(
+                agent_type="research",
+                description="Searching Slack for feedback",
+            ),
+            make_mock_assistant_message("Based on the research, here are the findings."),
+            make_mock_result_message(),
+        ])
+
+        resp = await client.post(
+            "/api/chat",
+            json={"message": "What feedback exists?"},
+        )
+        events = parse_sse_events(resp.text)
+        activity_events = [e for e in events if e["event"] == "agent_activity"]
+
+        assert len(activity_events) >= 1
+        data = json.loads(activity_events[0]["data"])
+        assert data["agent"] == "research"
+        assert data["status"] == "running"
+        assert "Slack" in data["task"]
+
+    async def test_agents_used_in_done(self, client, mock_agent_sdk):
+        from tests.conftest import (
+            make_mock_assistant_message,
+            make_mock_result_message,
+            make_mock_subagent_message,
+        )
+
+        mock_agent_sdk["set_messages"]([
+            make_mock_subagent_message(agent_type="research"),
+            make_mock_subagent_message(agent_type="backlog"),
+            make_mock_assistant_message("Summary of findings."),
+            make_mock_result_message(),
+        ])
+
+        resp = await client.post(
+            "/api/chat",
+            json={"message": "Sprint status"},
+        )
+        events = parse_sse_events(resp.text)
+        done_event = next(e for e in events if e["event"] == "done")
+        done_data = json.loads(done_event["data"])
+
+        assert "research" in done_data["agents_used"]
+        assert "backlog" in done_data["agents_used"]
+
+
+class TestToolCallEvents:
+    """Test that non-Task tool calls emit tool_call SSE events."""
+
+    async def test_tool_call_emitted(self, client, mock_agent_sdk):
+        from tests.conftest import (
+            make_mock_assistant_message,
+            make_mock_result_message,
+            make_mock_tool_call_message,
+        )
+
+        mock_agent_sdk["set_messages"]([
+            make_mock_tool_call_message(
+                tool_name="mcp__pm_tools__read_product_context",
+                tool_input={},
+            ),
+            make_mock_assistant_message("Here is the product context."),
+            make_mock_result_message(),
+        ])
+
+        resp = await client.post(
+            "/api/chat",
+            json={"message": "Load context"},
+        )
+        events = parse_sse_events(resp.text)
+        tool_events = [e for e in events if e["event"] == "tool_call"]
+
+        assert len(tool_events) >= 1
+        data = json.loads(tool_events[0]["data"])
+        assert data["tool"] == "mcp__pm_tools__read_product_context"
+
+
+class TestGracefulDegradation:
+    """Test that the agent works without MCP integrations configured."""
+
+    async def test_works_without_slack_linear(self, client, mock_agent_sdk):
+        """With no Slack/Linear tokens, agent should still respond."""
+        resp = await client.post(
+            "/api/chat",
+            json={"message": "Hello"},
+        )
+        events = parse_sse_events(resp.text)
+        event_types = [e["event"] for e in events]
+
+        assert "text" in event_types
+        assert "done" in event_types
+        assert "error" not in event_types
