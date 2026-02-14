@@ -1,0 +1,75 @@
+graph LR
+    subgraph Agents["Agent Layer"]
+        Orch2["Orchestrator"]
+        Res["Research Agent"]
+        Back["Backlog Agent"]
+        Pri["Prioritization Agent"]
+        Doc["Doc Agent"]
+    end
+
+    subgraph MCP["MCP Servers"]
+        SlackS["Slack MCP"]
+        LinearS["Linear MCP"]
+        NotionS["Notion MCP"]
+        WebS["Web Search MCP"]
+    end
+
+    subgraph SlackTools["Slack Tools"]
+        SS1["search_messages"]
+        SS2["read_thread"]
+        SS3["list_channels"]
+        SS4["post_message"]
+    end
+
+    subgraph LinearTools["Linear Tools"]
+        LS1["search_issues"]
+        LS2["get_issue"]
+        LS3["list_projects"]
+        LS4["get_cycle_status"]
+    end
+
+    subgraph NotionTools["Notion Tools"]
+        NS1["search_pages"]
+        NS2["read_page"]
+        NS3["create_page"]
+    end
+
+    subgraph WebTools["Web Tools"]
+        WS1["web_search"]
+        WS2["fetch_page"]
+    end
+
+    Res --> SlackS
+    Res --> WebS
+    Back --> LinearS
+    Doc --> NotionS
+    Doc --> SlackS
+
+    SlackS --> SS1
+    SlackS --> SS2
+    SlackS --> SS3
+    SlackS --> SS4
+
+    LinearS --> LS1
+    LinearS --> LS2
+    LinearS --> LS3
+    LinearS --> LS4
+
+    NotionS --> NS1
+    NotionS --> NS2
+    NotionS --> NS3
+
+    WebS --> WS1
+    WebS --> WS2
+
+    Pri -.->|No direct MCP · uses other agents output| Agents
+
+    style Orch2 fill:#7c3aed,color:#fff
+    style Res fill:#0ea5e9,color:#fff
+    style Back fill:#0ea5e9,color:#fff
+    style Pri fill:#7c3aed,color:#fff
+    style Doc fill:#7c3aed,color:#fff
+    style SlackS fill:#4a154b,color:#fff
+    style LinearS fill:#5e6ad2,color:#fff
+    style NotionS fill:#000,color:#fff
+    style WebS fill:#059669,color:#fff

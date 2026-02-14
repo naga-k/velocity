@@ -4,7 +4,7 @@ Agentic AI tool for startup PMs powered by Claude Opus 4.6. Connects to existing
 
 ## Current State
 
-**Scaffold is complete and merged to `main`.** End-to-end chat works: message → FastAPI → Claude (Sonnet) → SSE → React UI. 40 backend tests pass, frontend builds clean. The agent layer currently uses the raw `anthropic` SDK — Track A replaces this with Claude Agent SDK.
+**Track A (Agent SDK + MCP) is merged to `main`.** End-to-end chat works: message → FastAPI → Claude Agent SDK (Opus 4.6 orchestrator) → SSE → React UI. 58 backend tests pass, frontend builds clean. Four subagents defined (research, backlog, prioritization, doc-writer). Slack + Linear MCP configured. Using SDK fork for buffer deadlock fix (PR #572 upstream).
 
 ## Tech Stack
 
@@ -172,6 +172,8 @@ docker compose down                     # Stop all services
 - [ARCHITECTURE.md](ARCHITECTURE.md) — Full system design, agent specs, data flows, deployment strategy
 - [PRD.md](PRD.md) — Product requirements, user personas, feature areas, integration tiers
 - [hackathon-resources.md](hackathon-resources.md) — Anthropic docs, SDK references, course links
+- [docs/future-options.md](docs/future-options.md) — Evaluated alternatives and post-hackathon ideas
+- [docs/research/](docs/research/) — Pre-build research: vision, competitive landscape, user stories
 
 ## Environment Variables
 

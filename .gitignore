@@ -37,3 +37,6 @@ docker-compose.override.yml
 .coverage
 htmlcov/
 backend/scripts/
+
+# Temp / secrets
+temp/

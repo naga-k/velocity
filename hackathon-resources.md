@@ -49,3 +49,16 @@
 - Claude Quickstarts: https://github.com/anthropics/quickstarts
 - Agent Skills Repo: https://github.com/anthropics/agent-skills
 - Building Skills for Claude (eBook): https://www.anthropic.com/research/building-skills-for-claude
+
+## Anthropic — Agent SDK Hosting & Deployment
+
+- **Agent SDK Hosting Guide** (official): https://platform.claude.com/docs/en/agent-sdk/hosting
+- **Agent SDK Secure Deployment**: https://platform.claude.com/docs/en/agent-sdk/secure-deployment
+
+## Community — Agent Hosting & Hybrid Patterns
+
+- **claude-agent-server** (dzhng, 468★): https://github.com/dzhng/claude-agent-server — WebSocket wrapper for Claude Agent SDK with E2B sandbox support. Run agents in sandbox, control via WS.
+- **LangGraph + Claude SDK Hybrid Pattern** (Khaled Elfakharany): https://www.khaledelfakharany.com/articles/langgraph-claude-sdk-integration — LangGraph for orchestration, Claude Agent SDK for execution inside each node. 11-agent due diligence platform example.
+- **Reddit thread — LangGraph + Claude SDK hybrid**: https://www.reddit.com/r/LangChain/comments/1qg98n5/stopped_choosing_between_langgraph_and_claude_sdk/
+- **Claude Code SDK vs LangChain comparison** (Skywork AI): https://skywork.ai/blog/claude-code-sdk-vs-langchain-which-is-better-for-developers/
+- **LangSmith ↔ Claude Agent SDK tracing**: https://docs.langchain.com/langsmith/trace-claude-agent-sdk
