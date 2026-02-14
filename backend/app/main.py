@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.agent import cleanup_all_sessions
 from app.config import settings
 from app.routes import chat, health, sessions
 
@@ -13,7 +12,6 @@ from app.routes import chat, health, sessions
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
-    await cleanup_all_sessions()
 
 
 app = FastAPI(

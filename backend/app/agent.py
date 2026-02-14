@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -22,7 +23,6 @@ from claude_agent_sdk import (
     ClaudeSDKError,
     ResultMessage,
     TextBlock,
-    ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
     create_sdk_mcp_server,
@@ -215,6 +215,11 @@ def _build_mcp_servers() -> dict:
     return servers
 
 
+def _stderr_callback(line: str) -> None:
+    """Capture CLI subprocess stderr for debugging."""
+    logger.warning("CLI stderr: %s", line)
+
+
 def _build_options() -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions for the PM orchestrator."""
     return ClaudeAgentOptions(
@@ -234,18 +239,8 @@ def _build_options() -> ClaudeAgentOptions:
         thinking=ThinkingConfigAdaptive(type="adaptive"),
         cwd=str(MEMORY_DIR.parent),
         env={"ANTHROPIC_API_KEY": settings.anthropic_api_key},
+        stderr=_stderr_callback,
     )
-
-
-# NOTE: We create a fresh ClaudeSDKClient per query instead of caching
-# per-session. This avoids SDK bug #558 where the second query hangs
-# after the first invokes a subagent Task. Multi-turn context is not
-# preserved across queries for now — revisit when the SDK fixes this.
-
-
-async def cleanup_all_sessions() -> None:
-    """No-op — clients are cleaned up per-query now."""
-    pass
 
 
 # ---------------------------------------------------------------------------
@@ -275,11 +270,15 @@ async def generate_response(
         yield ("done", DoneEventData().model_dump_json())
         return
 
+    # Prevent nested session detection when running under Claude Code dev
+    os.environ.pop("CLAUDECODE", None)
+
     agents_used: list[str] = []
 
     try:
-        # Create a fresh client per query to avoid SDK bug #558 where
-        # the second query hangs after the first invokes a subagent Task.
+        # Fresh client per query — no resume.
+        # Resume is broken (SDK returns empty 0-token responses).
+        # Each message is an independent turn until upstream is fixed.
         client = ClaudeSDKClient(options=_build_options())
         await client.connect()
         await client.query(message)
@@ -295,10 +294,16 @@ async def generate_response(
         async for msg in client.receive_response():
             # --- Full assistant messages (content blocks) ---
             if isinstance(msg, AssistantMessage):
+                # A new AssistantMessage means any previous tool call
+                # has completed (SDK handles execution internally and
+                # does NOT yield ToolResultBlock). Reset the flag so
+                # post-tool text can flow through.
+                inside_tool_call = False
+
                 for block in msg.content:
                     if isinstance(block, TextBlock):
                         # Emit only if no deltas were streamed for this
-                        # segment AND we're not inside a subagent call
+                        # segment (avoids duplicate text)
                         if not has_streamed_text and not inside_tool_call:
                             yield ("text", json.dumps(block.text))
                         has_streamed_text = False

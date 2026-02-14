@@ -29,12 +29,6 @@ def reset_sessions():
     _sessions.clear()
 
 
-@pytest.fixture(autouse=True)
-def reset_agent_sessions():
-    """No-op — clients are now created per-query, no session cache."""
-    yield
-
-
 # ---------------------------------------------------------------------------
 # Mock helpers for Claude Agent SDK
 # ---------------------------------------------------------------------------
