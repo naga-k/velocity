@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
@@ -110,6 +111,8 @@ async def read_product_context(args: dict) -> dict:
 async def save_insight(args: dict) -> dict:
     """Append an insight to the appropriate category file."""
     category = args["category"]
+    if not re.match(r"^[a-zA-Z0-9_-]+$", category):
+        return {"content": [{"type": "text", "text": f"Invalid category: {category}"}]}
     insights_dir = MEMORY_DIR / "insights"
     insights_dir.mkdir(parents=True, exist_ok=True)
     target = insights_dir / f"{category}.md"
@@ -227,11 +230,6 @@ def _build_options() -> ClaudeAgentOptions:
         model=settings.anthropic_model_opus,
         agents=AGENTS,
         mcp_servers=_build_mcp_servers(),
-        allowed_tools=[
-            "Task",  # subagent invocation
-            "mcp__pm_tools__read_product_context",
-            "mcp__pm_tools__save_insight",
-        ],
         permission_mode="bypassPermissions",
         max_turns=settings.max_turns,
         max_budget_usd=settings.max_budget_per_session_usd,
@@ -274,6 +272,8 @@ async def generate_response(
     os.environ.pop("CLAUDECODE", None)
 
     agents_used: list[str] = []
+    client: ClaudeSDKClient | None = None
+    done_emitted = False
 
     try:
         # Fresh client per query — no resume.
@@ -360,6 +360,7 @@ async def generate_response(
 
             # --- Final result with cost/usage ---
             elif isinstance(msg, ResultMessage):
+                done_emitted = True
                 usage = msg.usage or {}
                 yield (
                     "done",
@@ -372,12 +373,6 @@ async def generate_response(
                     ).model_dump_json(),
                 )
 
-        # Clean up the per-query client
-        try:
-            await client.disconnect()
-        except Exception:
-            logger.warning("Error disconnecting client for session %s", session_id)
-
     except ClaudeSDKError as e:
         logger.error("Claude SDK error: %s", e)
         yield (
@@ -387,7 +382,6 @@ async def generate_response(
                 recoverable=False,
             ).model_dump_json(),
         )
-        yield ("done", DoneEventData(agents_used=agents_used).model_dump_json())
 
     except Exception as e:
         logger.exception("Unexpected error in generate_response")
@@ -398,4 +392,12 @@ async def generate_response(
                 recoverable=False,
             ).model_dump_json(),
         )
-        yield ("done", DoneEventData(agents_used=agents_used).model_dump_json())
+
+    finally:
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                logger.warning("Error disconnecting client for session %s", session_id)
+        if not done_emitted:
+            yield ("done", DoneEventData(agents_used=agents_used).model_dump_json())
