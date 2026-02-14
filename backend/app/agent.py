@@ -237,33 +237,15 @@ def _build_options() -> ClaudeAgentOptions:
     )
 
 
-# Per-session clients: session_id → ClaudeSDKClient
-_sessions: dict[str, ClaudeSDKClient] = {}
-
-
-async def _get_or_create_client(session_id: str) -> ClaudeSDKClient:
-    """Return an existing client for the session, or create a new one."""
-    if session_id not in _sessions:
-        client = ClaudeSDKClient(options=_build_options())
-        await client.connect()  # start subprocess — no prompt
-        _sessions[session_id] = client
-    return _sessions[session_id]
-
-
-async def cleanup_session(session_id: str) -> None:
-    """Disconnect and remove a session's client."""
-    client = _sessions.pop(session_id, None)
-    if client is not None:
-        try:
-            await client.disconnect()
-        except Exception:
-            logger.warning("Error disconnecting session %s", session_id)
+# NOTE: We create a fresh ClaudeSDKClient per query instead of caching
+# per-session. This avoids SDK bug #558 where the second query hangs
+# after the first invokes a subagent Task. Multi-turn context is not
+# preserved across queries for now — revisit when the SDK fixes this.
 
 
 async def cleanup_all_sessions() -> None:
-    """Disconnect all active clients (called on app shutdown)."""
-    for sid in list(_sessions):
-        await cleanup_session(sid)
+    """No-op — clients are cleaned up per-query now."""
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -296,17 +278,34 @@ async def generate_response(
     agents_used: list[str] = []
 
     try:
-        client = await _get_or_create_client(session_id)
+        # Create a fresh client per query to avoid SDK bug #558 where
+        # the second query hangs after the first invokes a subagent Task.
+        client = ClaudeSDKClient(options=_build_options())
+        await client.connect()
         await client.query(message)
+
+        # Track whether we've emitted text via StreamEvent deltas for
+        # the current "segment" (between tool calls). When the SDK
+        # streams deltas, AssistantMessage TextBlocks duplicate them —
+        # we skip those. But after tool calls, the SDK may NOT stream
+        # deltas, so we must emit the TextBlock as fallback.
+        has_streamed_text = False
+        inside_tool_call = False
 
         async for msg in client.receive_response():
             # --- Full assistant messages (content blocks) ---
-            # Text and thinking are already streamed via StreamEvent
-            # deltas, so we skip them here to avoid duplication.
-            # Only tool use blocks need handling from AssistantMessage.
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
-                    if isinstance(block, ToolUseBlock):
+                    if isinstance(block, TextBlock):
+                        # Emit only if no deltas were streamed for this
+                        # segment AND we're not inside a subagent call
+                        if not has_streamed_text and not inside_tool_call:
+                            yield ("text", json.dumps(block.text))
+                        has_streamed_text = False
+
+                    elif isinstance(block, ToolUseBlock):
+                        has_streamed_text = False
+                        inside_tool_call = True
                         # Detect subagent invocations
                         if block.name == "Task":
                             agent_type = block.input.get(
@@ -332,18 +331,19 @@ async def generate_response(
                             )
 
                     elif isinstance(block, ToolResultBlock):
-                        # If this is a completed subagent Task, emit completion
-                        pass  # handled by SubagentStop hook or next message
+                        inside_tool_call = False
+                        has_streamed_text = False
 
             # --- Streaming partial events ---
             elif isinstance(msg, StreamEvent):
                 event = msg.event
                 event_type = event.get("type", "")
 
-                # Text deltas for real-time streaming
-                if event_type == "content_block_delta":
+                # Only stream orchestrator text, not subagent text
+                if event_type == "content_block_delta" and not msg.parent_tool_use_id:
                     delta = event.get("delta", {})
                     if delta.get("type") == "text_delta":
+                        has_streamed_text = True
                         yield ("text", json.dumps(delta.get("text", "")))
                     elif delta.get("type") == "thinking_delta":
                         yield (
@@ -352,13 +352,6 @@ async def generate_response(
                                 text=delta.get("thinking", ""),
                             ).model_dump_json(),
                         )
-
-                # Track subagent activity from stream events
-                if msg.parent_tool_use_id and event_type in (
-                    "content_block_start",
-                    "content_block_stop",
-                ):
-                    pass  # subagent progress — could emit more granular events
 
             # --- Final result with cost/usage ---
             elif isinstance(msg, ResultMessage):
@@ -373,6 +366,12 @@ async def generate_response(
                         agents_used=agents_used,
                     ).model_dump_json(),
                 )
+
+        # Clean up the per-query client
+        try:
+            await client.disconnect()
+        except Exception:
+            logger.warning("Error disconnecting client for session %s", session_id)
 
     except ClaudeSDKError as e:
         logger.error("Claude SDK error: %s", e)

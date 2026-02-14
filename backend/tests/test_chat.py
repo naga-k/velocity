@@ -199,6 +199,7 @@ class TestAgentActivityEvents:
             make_mock_result_message,
             make_mock_stream_text_deltas,
             make_mock_subagent_message,
+            make_mock_tool_result_message,
         )
 
         mock_agent_sdk["set_messages"]([
@@ -206,6 +207,7 @@ class TestAgentActivityEvents:
                 agent_type="research",
                 description="Searching Slack for feedback",
             ),
+            make_mock_tool_result_message(),
             *make_mock_stream_text_deltas("Based on the research, here are the findings."),
             make_mock_result_message(),
         ])
@@ -228,11 +230,14 @@ class TestAgentActivityEvents:
             make_mock_result_message,
             make_mock_stream_text_deltas,
             make_mock_subagent_message,
+            make_mock_tool_result_message,
         )
 
         mock_agent_sdk["set_messages"]([
             make_mock_subagent_message(agent_type="research"),
+            make_mock_tool_result_message(),
             make_mock_subagent_message(agent_type="backlog"),
+            make_mock_tool_result_message(),
             *make_mock_stream_text_deltas("Summary of findings."),
             make_mock_result_message(),
         ])
@@ -278,6 +283,111 @@ class TestToolCallEvents:
         assert len(tool_events) >= 1
         data = json.loads(tool_events[0]["data"])
         assert data["tool"] == "mcp__pm_tools__read_product_context"
+
+
+class TestTextBlockFallback:
+    """Test that TextBlocks are emitted when no streaming deltas come."""
+
+    async def test_textblock_emitted_after_tool_call_no_deltas(
+        self, client, mock_agent_sdk
+    ):
+        """When the orchestrator responds via TextBlock after a tool call
+        (no streaming deltas), the text must still reach the frontend."""
+        from tests.conftest import (
+            make_mock_assistant_message,
+            make_mock_result_message,
+            make_mock_subagent_message,
+            make_mock_tool_result_message,
+        )
+
+        mock_agent_sdk["set_messages"]([
+            make_mock_subagent_message(agent_type="research"),
+            make_mock_tool_result_message(),
+            # Post-tool response with NO streaming deltas — only TextBlock
+            make_mock_assistant_message("Based on the research, users love it."),
+            make_mock_result_message(),
+        ])
+
+        resp = await client.post(
+            "/api/chat",
+            json={"message": "What feedback exists?"},
+        )
+        events = parse_sse_events(resp.text)
+        text_events = [e for e in events if e["event"] == "text"]
+
+        assert len(text_events) >= 1
+        full_text = "".join(json.loads(e["data"]) for e in text_events)
+        assert "users love it" in full_text
+
+    async def test_textblock_skipped_when_deltas_present(
+        self, client, mock_agent_sdk
+    ):
+        """When streaming deltas are present, TextBlock must be skipped
+        to avoid duplication."""
+        from tests.conftest import (
+            make_mock_assistant_message,
+            make_mock_result_message,
+            make_mock_stream_text_deltas,
+        )
+
+        mock_agent_sdk["set_messages"]([
+            *make_mock_stream_text_deltas("Hello from Claude!"),
+            # This TextBlock duplicates the deltas — must be skipped
+            make_mock_assistant_message("Hello from Claude!"),
+            make_mock_result_message(),
+        ])
+
+        resp = await client.post(
+            "/api/chat",
+            json={"message": "Hello"},
+        )
+        events = parse_sse_events(resp.text)
+        text_events = [e for e in events if e["event"] == "text"]
+
+        full_text = "".join(json.loads(e["data"]) for e in text_events)
+        # Should appear exactly once, not duplicated
+        assert full_text == "Hello from Claude!"
+
+    async def test_subagent_text_not_emitted(self, client, mock_agent_sdk):
+        """Text from subagent StreamEvents (parent_tool_use_id set)
+        must not reach the frontend."""
+        from claude_agent_sdk.types import StreamEvent
+
+        from tests.conftest import (
+            make_mock_assistant_message,
+            make_mock_result_message,
+            make_mock_subagent_message,
+            make_mock_tool_result_message,
+        )
+
+        subagent_delta = StreamEvent(
+            uuid="evt-sub-0",
+            session_id="test-session",
+            event={
+                "type": "content_block_delta",
+                "delta": {"type": "text_delta", "text": "SUBAGENT TEXT"},
+            },
+            parent_tool_use_id="tool-123",
+        )
+
+        mock_agent_sdk["set_messages"]([
+            make_mock_subagent_message(agent_type="research"),
+            subagent_delta,  # subagent text — should be filtered
+            make_mock_tool_result_message(),
+            make_mock_assistant_message("Orchestrator summary."),
+            make_mock_result_message(),
+        ])
+
+        resp = await client.post(
+            "/api/chat",
+            json={"message": "Research this"},
+        )
+        events = parse_sse_events(resp.text)
+        text_events = [e for e in events if e["event"] == "text"]
+
+        full_text = "".join(json.loads(e["data"]) for e in text_events)
+        assert "SUBAGENT TEXT" not in full_text
+        assert "Orchestrator summary" in full_text
 
 
 class TestGracefulDegradation:

@@ -31,11 +31,8 @@ def reset_sessions():
 
 @pytest.fixture(autouse=True)
 def reset_agent_sessions():
-    """Clear agent SDK session clients between tests."""
-    from app import agent
-    agent._sessions.clear()
+    """No-op — clients are now created per-query, no session cache."""
     yield
-    agent._sessions.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +131,25 @@ def make_mock_tool_call_message(
                 id="tool-456",
                 name=tool_name,
                 input=tool_input or {},
+            ),
+        ],
+        model=model,
+    )
+
+
+def make_mock_tool_result_message(
+    tool_use_id: str = "tool-123",
+    content: str = "Tool result here",
+    model: str = "claude-opus-4-6",
+):
+    """Create a mock AssistantMessage with a ToolResultBlock."""
+    from claude_agent_sdk import AssistantMessage, ToolResultBlock
+
+    return AssistantMessage(
+        content=[
+            ToolResultBlock(
+                tool_use_id=tool_use_id,
+                content=content,
             ),
         ],
         model=model,
