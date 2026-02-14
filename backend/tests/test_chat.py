@@ -9,25 +9,28 @@ from app.models import ErrorEventData
 
 
 def parse_sse_events(raw: str) -> list[dict]:
-    """Parse raw SSE text into a list of {event, data} dicts."""
+    """Parse raw SSE text into a list of {event, data} dicts.
+
+    Handles both \\n and \\r\\n line endings (sse_starlette uses \\r\\n).
+    """
     events = []
     current_event = None
-    current_data = None
+    current_data: list[str] = []
 
     for line in raw.split("\n"):
-        line = line.strip()
+        line = line.rstrip("\r")  # handle \r\n line endings
         if line.startswith("event:"):
             current_event = line[len("event:"):].strip()
         elif line.startswith("data:"):
-            current_data = line[len("data:"):].strip()
-        elif line == "" and current_event is not None and current_data is not None:
-            events.append({"event": current_event, "data": current_data})
+            current_data.append(line[len("data:"):].strip())
+        elif line == "" and current_event is not None and len(current_data) > 0:
+            events.append({"event": current_event, "data": "\n".join(current_data)})
             current_event = None
-            current_data = None
+            current_data = []
 
     # Handle last event if no trailing newline
-    if current_event is not None and current_data is not None:
-        events.append({"event": current_event, "data": current_data})
+    if current_event is not None and len(current_data) > 0:
+        events.append({"event": current_event, "data": "\n".join(current_data)})
 
     return events
 
@@ -292,3 +295,54 @@ class TestGracefulDegradation:
         assert "text" in event_types
         assert "done" in event_types
         assert "error" not in event_types
+
+
+class TestSSEWireFormat:
+    """Verify the raw SSE format so frontend parsers can rely on it."""
+
+    async def test_sse_uses_crlf_line_endings(self, client, mock_agent_sdk):
+        """sse_starlette uses \\r\\n — parsers must handle this."""
+        resp = await client.post(
+            "/api/chat",
+            json={"message": "Hello"},
+        )
+        # The raw response should contain \r\n (sse_starlette convention)
+        raw_bytes = resp.content
+        assert b"\r\n" in raw_bytes
+
+    async def test_parser_handles_crlf(self):
+        """parse_sse_events must work with \\r\\n line endings."""
+        raw = "event: text\r\ndata: \"Hello\"\r\n\r\nevent: done\r\ndata: {}\r\n\r\n"
+        events = parse_sse_events(raw)
+
+        assert len(events) == 2
+        assert events[0]["event"] == "text"
+        assert events[0]["data"] == '"Hello"'
+        assert events[1]["event"] == "done"
+
+    async def test_parser_handles_lf(self):
+        """parse_sse_events must also work with plain \\n."""
+        raw = 'event: text\ndata: "World"\n\nevent: done\ndata: {}\n\n'
+        events = parse_sse_events(raw)
+
+        assert len(events) == 2
+        assert events[0]["data"] == '"World"'
+
+    async def test_events_are_separated_by_blank_lines(self, client, mock_agent_sdk):
+        """Each SSE event must be followed by a blank line."""
+        resp = await client.post(
+            "/api/chat",
+            json={"message": "Hello"},
+        )
+        events = parse_sse_events(resp.text)
+
+        # Must have at least text + done
+        event_types = [e["event"] for e in events]
+        assert "text" in event_types
+        assert "done" in event_types
+
+        # Verify each text event data is a valid JSON string
+        for e in events:
+            if e["event"] == "text":
+                parsed = json.loads(e["data"])
+                assert isinstance(parsed, str)
