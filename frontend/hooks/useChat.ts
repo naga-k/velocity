@@ -166,7 +166,12 @@ export function useChat(sessionId: string): UseChatReturn {
           const lines = buffer.split("\n");
           buffer = lines.pop() || "";
 
-          for (const line of lines) {
+          for (const rawLine of lines) {
+            // Strip trailing \r from \r\n line endings (SSE spec allows both)
+            const line = rawLine.endsWith("\r")
+              ? rawLine.slice(0, -1)
+              : rawLine;
+
             if (line.startsWith("event:")) {
               currentEventType = line.slice(6).trim() as SSEEventType;
               continue;

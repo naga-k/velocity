@@ -1,15 +1,24 @@
 """FastAPI application entry point."""
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.routes import chat, health, sessions
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+
+
 app = FastAPI(
     title="Velocity",
     description="AI PM Agent — Backend API",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(

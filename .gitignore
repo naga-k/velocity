@@ -36,3 +36,4 @@ docker-compose.override.yml
 .pytest_cache/
 .coverage
 htmlcov/
+backend/scripts/

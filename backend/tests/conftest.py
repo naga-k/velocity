@@ -29,68 +29,220 @@ def reset_sessions():
     _sessions.clear()
 
 
-def make_mock_stream_events(text: str = "Hello from Claude!"):
-    """Create mock Anthropic streaming events for a simple text response.
+# ---------------------------------------------------------------------------
+# Mock helpers for Claude Agent SDK
+# ---------------------------------------------------------------------------
 
-    Returns a list of mock event objects that simulate the Anthropic
-    messages.stream() async context manager.
-    """
+
+def make_mock_assistant_message(
+    text: str = "Hello from Claude!",
+    model: str = "claude-opus-4-6",
+):
+    """Create a mock AssistantMessage with a single TextBlock."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    return AssistantMessage(
+        content=[TextBlock(text=text)],
+        model=model,
+    )
+
+
+def make_mock_result_message(
+    input_tokens: int = 25,
+    output_tokens: int = 10,
+    session_id: str = "test-session",
+):
+    """Create a mock ResultMessage with usage data."""
+    from claude_agent_sdk import ResultMessage
+
+    return ResultMessage(
+        subtype="result",
+        duration_ms=500,
+        duration_api_ms=400,
+        is_error=False,
+        num_turns=1,
+        session_id=session_id,
+        total_cost_usd=0.01,
+        usage={
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        },
+    )
+
+
+def make_mock_thinking_message(
+    thinking_text: str = "Let me think about this...",
+    response_text: str = "Here is my answer.",
+    model: str = "claude-opus-4-6",
+):
+    """Create a mock AssistantMessage with ThinkingBlock + TextBlock."""
+    from claude_agent_sdk import AssistantMessage, TextBlock, ThinkingBlock
+
+    return AssistantMessage(
+        content=[
+            ThinkingBlock(thinking=thinking_text, signature="sig123"),
+            TextBlock(text=response_text),
+        ],
+        model=model,
+    )
+
+
+def make_mock_subagent_message(
+    agent_type: str = "research",
+    description: str = "Searching Slack for context",
+    model: str = "claude-opus-4-6",
+):
+    """Create a mock AssistantMessage with a Task tool call (subagent)."""
+    from claude_agent_sdk import AssistantMessage, ToolUseBlock
+
+    return AssistantMessage(
+        content=[
+            ToolUseBlock(
+                id="tool-123",
+                name="Task",
+                input={
+                    "subagent_type": agent_type,
+                    "description": description,
+                    "prompt": "Find relevant discussions",
+                },
+            ),
+        ],
+        model=model,
+    )
+
+
+def make_mock_tool_call_message(
+    tool_name: str = "mcp__pm_tools__read_product_context",
+    tool_input: dict | None = None,
+    model: str = "claude-opus-4-6",
+):
+    """Create a mock AssistantMessage with a non-Task tool call."""
+    from claude_agent_sdk import AssistantMessage, ToolUseBlock
+
+    return AssistantMessage(
+        content=[
+            ToolUseBlock(
+                id="tool-456",
+                name=tool_name,
+                input=tool_input or {},
+            ),
+        ],
+        model=model,
+    )
+
+
+def make_mock_tool_result_message(
+    tool_use_id: str = "tool-123",
+    content: str = "Tool result here",
+    model: str = "claude-opus-4-6",
+):
+    """Create a mock AssistantMessage with a ToolResultBlock."""
+    from claude_agent_sdk import AssistantMessage, ToolResultBlock
+
+    return AssistantMessage(
+        content=[
+            ToolResultBlock(
+                tool_use_id=tool_use_id,
+                content=content,
+            ),
+        ],
+        model=model,
+    )
+
+
+def make_mock_stream_text_deltas(
+    text: str = "Hello from Claude!",
+    chunk_size: int = 5,
+    session_id: str = "test-session",
+):
+    """Create a list of mock StreamEvents that simulate text streaming."""
+    from claude_agent_sdk.types import StreamEvent
+
     events = []
-
-    # message_start
-    msg_start = MagicMock()
-    msg_start.type = "message_start"
-    msg_start.message = MagicMock()
-    msg_start.message.usage = MagicMock()
-    msg_start.message.usage.input_tokens = 25
-    events.append(msg_start)
-
-    # content_block_delta for each chunk
-    for chunk in [text[:5], text[5:]]:
-        delta_event = MagicMock()
-        delta_event.type = "content_block_delta"
-        delta_event.delta = MagicMock()
-        delta_event.delta.text = chunk
-        events.append(delta_event)
-
-    # message_delta (usage)
-    msg_delta = MagicMock()
-    msg_delta.type = "message_delta"
-    msg_delta.usage = MagicMock()
-    msg_delta.usage.output_tokens = 10
-    events.append(msg_delta)
-
+    for i in range(0, len(text), chunk_size):
+        chunk = text[i : i + chunk_size]
+        events.append(
+            StreamEvent(
+                uuid=f"evt-{i}",
+                session_id=session_id,
+                event={
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": chunk},
+                },
+            )
+        )
     return events
 
 
+def make_mock_stream_thinking_delta(
+    thinking_text: str = "Let me think...",
+    session_id: str = "test-session",
+):
+    """Create a mock StreamEvent for a thinking delta."""
+    from claude_agent_sdk.types import StreamEvent
+
+    return StreamEvent(
+        uuid="evt-think-0",
+        session_id=session_id,
+        event={
+            "type": "content_block_delta",
+            "delta": {"type": "thinking_delta", "thinking": thinking_text},
+        },
+    )
+
+
+async def _mock_receive_response(messages):
+    """Turn a list of messages into an async iterator."""
+    for msg in messages:
+        yield msg
+
+
 @pytest.fixture
-def mock_anthropic():
-    """Patch anthropic.AsyncAnthropic to return canned streaming responses.
+def mock_agent_sdk():
+    """Patch ClaudeSDKClient to return canned responses.
 
-    Usage in tests:
-        def test_chat(mock_anthropic):
-            # mock_anthropic is already active
-            ...
+    Yields a dict with the mock client and helper to set response messages.
+
+    Usage:
+        def test_chat(mock_agent_sdk):
+            mock_agent_sdk["set_messages"]([
+                make_mock_assistant_message("Hi!"),
+                make_mock_result_message(),
+            ])
     """
-    mock_events = make_mock_stream_events()
-
-    async def async_event_iter():
-        for event in mock_events:
-            yield event
-
-    mock_stream = MagicMock()
-    mock_stream.__aiter__ = lambda self: async_event_iter()
-
-    mock_ctx = AsyncMock()
-    mock_ctx.__aenter__ = AsyncMock(return_value=mock_stream)
-    mock_ctx.__aexit__ = AsyncMock(return_value=False)
+    messages = [
+        *make_mock_stream_text_deltas("Hello from Claude!"),
+        make_mock_result_message(),
+    ]
 
     mock_client = MagicMock()
-    mock_client.messages.stream = MagicMock(return_value=mock_ctx)
+    mock_client.connect = AsyncMock()
+    mock_client.disconnect = AsyncMock()
+    mock_client.query = AsyncMock()
+    mock_client.receive_response = MagicMock(
+        side_effect=lambda: _mock_receive_response(messages)
+    )
 
-    with patch("app.agent._get_client", return_value=mock_client):
+    def set_messages(new_messages):
+        nonlocal messages
+        messages = new_messages
+        mock_client.receive_response = MagicMock(
+            side_effect=lambda: _mock_receive_response(messages)
+        )
+
+    with patch("app.agent.ClaudeSDKClient", return_value=mock_client):
         with patch("app.agent.settings") as mock_settings:
             mock_settings.anthropic_configured = True
             mock_settings.anthropic_api_key = "test-key"
-            mock_settings.anthropic_model = "claude-sonnet-4-5-20250929"
-            yield mock_client
+            mock_settings.anthropic_model_opus = "claude-opus-4-6"
+            mock_settings.anthropic_model_sonnet = "claude-sonnet-4-5-20250929"
+            mock_settings.slack_configured = False
+            mock_settings.linear_configured = False
+            mock_settings.slack_bot_token = ""
+            mock_settings.linear_api_key = ""
+            mock_settings.max_budget_per_session_usd = 2.0
+            mock_settings.max_turns = 30
+            yield {
+                "client": mock_client,
+                "set_messages": set_messages,
+            }
