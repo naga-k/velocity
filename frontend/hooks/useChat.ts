@@ -30,11 +30,13 @@ export function useChat(sessionId: string): UseChatReturn {
   const [error, setError] = useState<string | null>(null);
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const isStreamingRef = useRef(false);
 
   const sendMessage = useCallback(
     async (content: string) => {
-      if (!content.trim()) return;
+      if (!content.trim() || isStreamingRef.current) return;
 
+      isStreamingRef.current = true;
       setIsStreaming(true);
       setError(null);
       setAgentActivity([]);
@@ -74,10 +76,87 @@ export function useChat(sessionId: string): UseChatReturn {
           throw new Error(`HTTP ${response.status}`);
         }
 
-        const reader = response.body!.getReader();
+        if (!response.body) {
+          throw new Error("Response body is null");
+        }
+
+        const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
         let currentEventType: SSEEventType | null = null;
+        let dataLines: string[] = [];
+
+        const dispatchEvent = () => {
+          if (!currentEventType || dataLines.length === 0) {
+            currentEventType = null;
+            dataLines = [];
+            return;
+          }
+
+          const rawData = dataLines.join("\n");
+          dataLines = [];
+          const eventType = currentEventType;
+          currentEventType = null;
+
+          try {
+            const data = JSON.parse(rawData);
+
+            switch (eventType) {
+              case "text": {
+                if (typeof data === "string") {
+                  assistantContent += data;
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === assistantId
+                        ? { ...m, content: assistantContent }
+                        : m
+                    )
+                  );
+                }
+                break;
+              }
+
+              case "error": {
+                const errData = data as ErrorEventData;
+                setError(errData.message);
+                break;
+              }
+
+              case "done": {
+                const doneData = data as DoneEventData;
+                setTokenUsage(doneData.tokens_used);
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantId ? { ...m, isStreaming: false } : m
+                  )
+                );
+                break;
+              }
+
+              case "agent_activity": {
+                const activity = data as AgentActivityData;
+                setAgentActivity((prev) => {
+                  const existing = prev.findIndex(
+                    (a) => a.agent === activity.agent
+                  );
+                  if (existing >= 0) {
+                    const updated = [...prev];
+                    updated[existing] = activity;
+                    return updated;
+                  }
+                  return [...prev, activity];
+                });
+                break;
+              }
+
+              // thinking, citation, tool_call — handled by Track A/B
+              default:
+                break;
+            }
+          } catch {
+            // Skip malformed JSON
+          }
+        };
 
         while (true) {
           const { done, value } = await reader.read();
@@ -93,77 +172,25 @@ export function useChat(sessionId: string): UseChatReturn {
               continue;
             }
 
-            if (line.startsWith("data:") && currentEventType) {
-              const rawData = line.slice(5).trim();
-              try {
-                const data = JSON.parse(rawData);
-
-                switch (currentEventType) {
-                  case "text": {
-                    // data is a bare string
-                    if (typeof data === "string") {
-                      assistantContent += data;
-                      setMessages((prev) =>
-                        prev.map((m) =>
-                          m.id === assistantId
-                            ? { ...m, content: assistantContent }
-                            : m
-                        )
-                      );
-                    }
-                    break;
-                  }
-
-                  case "error": {
-                    const errData = data as ErrorEventData;
-                    setError(errData.message);
-                    break;
-                  }
-
-                  case "done": {
-                    const doneData = data as DoneEventData;
-                    setTokenUsage(doneData.tokens_used);
-                    // Mark assistant message as done streaming
-                    setMessages((prev) =>
-                      prev.map((m) =>
-                        m.id === assistantId ? { ...m, isStreaming: false } : m
-                      )
-                    );
-                    break;
-                  }
-
-                  case "agent_activity": {
-                    const activity = data as AgentActivityData;
-                    setAgentActivity((prev) => {
-                      const existing = prev.findIndex(
-                        (a) => a.agent === activity.agent
-                      );
-                      if (existing >= 0) {
-                        const updated = [...prev];
-                        updated[existing] = activity;
-                        return updated;
-                      }
-                      return [...prev, activity];
-                    });
-                    break;
-                  }
-
-                  // thinking, citation, tool_call — handled by Track A/B
-                  default:
-                    break;
-                }
-              } catch {
-                // Skip malformed JSON
-              }
-              currentEventType = null;
+            if (line.startsWith("data:")) {
+              dataLines.push(line.slice(5).trim());
+              continue;
             }
 
-            // Empty line resets event state (SSE spec)
+            // Empty line dispatches the event (SSE spec)
             if (line === "") {
-              currentEventType = null;
+              dispatchEvent();
             }
           }
         }
+
+        // Flush remaining buffer and dispatch any pending event
+        if (buffer.trim()) {
+          if (buffer.startsWith("data:")) {
+            dataLines.push(buffer.slice(5).trim());
+          }
+        }
+        dispatchEvent();
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") {
           // User cancelled — not an error
@@ -171,6 +198,7 @@ export function useChat(sessionId: string): UseChatReturn {
           setError(err instanceof Error ? err.message : "Unknown error");
         }
       } finally {
+        isStreamingRef.current = false;
         setIsStreaming(false);
         // Ensure assistant message is marked as not streaming
         setMessages((prev) =>

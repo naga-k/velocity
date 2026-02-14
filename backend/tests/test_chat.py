@@ -108,6 +108,13 @@ class TestChatEndpoint:
         )
         assert resp.status_code == 200
 
+    async def test_chat_rejects_empty_message(self, client, mock_anthropic):
+        resp = await client.post(
+            "/api/chat",
+            json={"message": ""},
+        )
+        assert resp.status_code == 422
+
     async def test_chat_error_when_no_api_key(self, client):
         with patch("app.agent.settings") as mock_settings:
             mock_settings.anthropic_configured = False

@@ -26,6 +26,16 @@ You help PMs make better product decisions by analyzing data from their tools
 Be concise, actionable, and cite sources when available.
 """
 
+_client: anthropic.AsyncAnthropic | None = None
+
+
+def _get_client() -> anthropic.AsyncAnthropic:
+    """Return a singleton Anthropic client, created lazily."""
+    global _client
+    if _client is None:
+        _client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    return _client
+
 
 async def generate_response(
     message: str,
@@ -51,7 +61,7 @@ async def generate_response(
         yield ("done", DoneEventData().model_dump_json())
         return
 
-    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
+    client = _get_client()
 
     try:
         async with client.messages.stream(

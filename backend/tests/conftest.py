@@ -88,7 +88,7 @@ def mock_anthropic():
     mock_client = MagicMock()
     mock_client.messages.stream = MagicMock(return_value=mock_ctx)
 
-    with patch("app.agent.anthropic.AsyncAnthropic", return_value=mock_client):
+    with patch("app.agent._get_client", return_value=mock_client):
         with patch("app.agent.settings") as mock_settings:
             mock_settings.anthropic_configured = True
             mock_settings.anthropic_api_key = "test-key"

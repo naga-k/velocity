@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 class ChatRequest(BaseModel):
     """POST /api/chat request body."""
-    message: str
+    message: str = Field(min_length=1)
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     context: dict | None = None  # unused in scaffold
 

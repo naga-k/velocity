@@ -38,6 +38,11 @@ class TestChatRequest:
         req = ChatRequest(message="Hi", context={"project": "API"})
         assert req.context == {"project": "API"}
 
+    def test_empty_message_rejected(self):
+        import pytest
+        with pytest.raises(Exception):  # ValidationError
+            ChatRequest(message="")
+
     def test_serialization_roundtrip(self):
         req = ChatRequest(message="Hello", session_id="abc")
         data = req.model_dump()
