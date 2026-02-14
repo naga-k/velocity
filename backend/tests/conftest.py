@@ -6,6 +6,7 @@ import json
 from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import fakeredis.aioredis
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -21,12 +22,29 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
 
 
 @pytest.fixture(autouse=True)
-def reset_sessions():
-    """Clear in-memory session store between tests."""
-    from app.routes.sessions import _sessions
-    _sessions.clear()
+async def setup_test_db(tmp_path):
+    """Initialize a fresh SQLite database for each test."""
+    from app.database import init_db
+    import app.database as db_mod
+
+    db_file = str(tmp_path / "test.db")
+    with patch.object(db_mod, "settings") as mock_s:
+        mock_s.database_url = f"sqlite:///{db_file}"
+        await init_db()
+
     yield
-    _sessions.clear()
+
+
+@pytest.fixture(autouse=True)
+async def setup_test_redis():
+    """Provide a fake Redis instance for each test."""
+    import app.redis_client as redis_mod
+
+    fake = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    redis_mod._redis = fake
+    yield
+    await fake.aclose()
+    redis_mod._redis = None
 
 
 # ---------------------------------------------------------------------------
