@@ -135,19 +135,18 @@ class TestChatEndpoint:
 
 
 class TestThinkingEvents:
-    """Test that thinking blocks are emitted as SSE thinking events."""
+    """Test that thinking deltas are emitted as SSE thinking events."""
 
     async def test_thinking_event_emitted(self, client, mock_agent_sdk):
         from tests.conftest import (
             make_mock_result_message,
-            make_mock_thinking_message,
+            make_mock_stream_text_deltas,
+            make_mock_stream_thinking_delta,
         )
 
         mock_agent_sdk["set_messages"]([
-            make_mock_thinking_message(
-                thinking_text="Analyzing the request...",
-                response_text="Here is my answer.",
-            ),
+            make_mock_stream_thinking_delta("Analyzing the request..."),
+            *make_mock_stream_text_deltas("Here is my answer."),
             make_mock_result_message(),
         ])
 
@@ -166,14 +165,13 @@ class TestThinkingEvents:
     async def test_thinking_then_text(self, client, mock_agent_sdk):
         from tests.conftest import (
             make_mock_result_message,
-            make_mock_thinking_message,
+            make_mock_stream_text_deltas,
+            make_mock_stream_thinking_delta,
         )
 
         mock_agent_sdk["set_messages"]([
-            make_mock_thinking_message(
-                thinking_text="Planning...",
-                response_text="The answer is 42.",
-            ),
+            make_mock_stream_thinking_delta("Planning..."),
+            *make_mock_stream_text_deltas("The answer is 42."),
             make_mock_result_message(),
         ])
 
@@ -195,8 +193,8 @@ class TestAgentActivityEvents:
 
     async def test_subagent_emits_agent_activity(self, client, mock_agent_sdk):
         from tests.conftest import (
-            make_mock_assistant_message,
             make_mock_result_message,
+            make_mock_stream_text_deltas,
             make_mock_subagent_message,
         )
 
@@ -205,7 +203,7 @@ class TestAgentActivityEvents:
                 agent_type="research",
                 description="Searching Slack for feedback",
             ),
-            make_mock_assistant_message("Based on the research, here are the findings."),
+            *make_mock_stream_text_deltas("Based on the research, here are the findings."),
             make_mock_result_message(),
         ])
 
@@ -224,15 +222,15 @@ class TestAgentActivityEvents:
 
     async def test_agents_used_in_done(self, client, mock_agent_sdk):
         from tests.conftest import (
-            make_mock_assistant_message,
             make_mock_result_message,
+            make_mock_stream_text_deltas,
             make_mock_subagent_message,
         )
 
         mock_agent_sdk["set_messages"]([
             make_mock_subagent_message(agent_type="research"),
             make_mock_subagent_message(agent_type="backlog"),
-            make_mock_assistant_message("Summary of findings."),
+            *make_mock_stream_text_deltas("Summary of findings."),
             make_mock_result_message(),
         ])
 
@@ -253,8 +251,8 @@ class TestToolCallEvents:
 
     async def test_tool_call_emitted(self, client, mock_agent_sdk):
         from tests.conftest import (
-            make_mock_assistant_message,
             make_mock_result_message,
+            make_mock_stream_text_deltas,
             make_mock_tool_call_message,
         )
 
@@ -263,7 +261,7 @@ class TestToolCallEvents:
                 tool_name="mcp__pm_tools__read_product_context",
                 tool_input={},
             ),
-            make_mock_assistant_message("Here is the product context."),
+            *make_mock_stream_text_deltas("Here is the product context."),
             make_mock_result_message(),
         ])
 

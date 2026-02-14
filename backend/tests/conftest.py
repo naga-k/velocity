@@ -140,6 +140,47 @@ def make_mock_tool_call_message(
     )
 
 
+def make_mock_stream_text_deltas(
+    text: str = "Hello from Claude!",
+    chunk_size: int = 5,
+    session_id: str = "test-session",
+):
+    """Create a list of mock StreamEvents that simulate text streaming."""
+    from claude_agent_sdk.types import StreamEvent
+
+    events = []
+    for i in range(0, len(text), chunk_size):
+        chunk = text[i : i + chunk_size]
+        events.append(
+            StreamEvent(
+                uuid=f"evt-{i}",
+                session_id=session_id,
+                event={
+                    "type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": chunk},
+                },
+            )
+        )
+    return events
+
+
+def make_mock_stream_thinking_delta(
+    thinking_text: str = "Let me think...",
+    session_id: str = "test-session",
+):
+    """Create a mock StreamEvent for a thinking delta."""
+    from claude_agent_sdk.types import StreamEvent
+
+    return StreamEvent(
+        uuid="evt-think-0",
+        session_id=session_id,
+        event={
+            "type": "content_block_delta",
+            "delta": {"type": "thinking_delta", "thinking": thinking_text},
+        },
+    )
+
+
 async def _mock_receive_response(messages):
     """Turn a list of messages into an async iterator."""
     for msg in messages:
@@ -160,7 +201,7 @@ def mock_agent_sdk():
             ])
     """
     messages = [
-        make_mock_assistant_message("Hello from Claude!"),
+        *make_mock_stream_text_deltas("Hello from Claude!"),
         make_mock_result_message(),
     ]
 

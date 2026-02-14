@@ -301,20 +301,12 @@ async def generate_response(
 
         async for msg in client.receive_response():
             # --- Full assistant messages (content blocks) ---
+            # Text and thinking are already streamed via StreamEvent
+            # deltas, so we skip them here to avoid duplication.
+            # Only tool use blocks need handling from AssistantMessage.
             if isinstance(msg, AssistantMessage):
                 for block in msg.content:
-                    if isinstance(block, TextBlock):
-                        yield ("text", json.dumps(block.text))
-
-                    elif isinstance(block, ThinkingBlock):
-                        yield (
-                            "thinking",
-                            ThinkingEventData(
-                                text=block.thinking,
-                            ).model_dump_json(),
-                        )
-
-                    elif isinstance(block, ToolUseBlock):
+                    if isinstance(block, ToolUseBlock):
                         # Detect subagent invocations
                         if block.name == "Task":
                             agent_type = block.input.get(
