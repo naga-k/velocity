@@ -77,6 +77,30 @@ Evaluated during hackathon (Feb 2026). Documented here to keep options open with
 
 **When it might make sense:** If we want to offer an embeddable agent API (let others integrate our PM agent into their apps via WebSocket).
 
+### Integration Expansion — Cross-Source Intelligence
+
+**Inspiration:** [YC RFS: Cursor for Product Managers](https://www.ycombinator.com/rfs#cursor-for-product-managers) + Soulcaster project (social/GTM integrations).
+
+The real moat isn't any single integration — it's **cross-source pattern detection** across categories that no PM can manually correlate. "3 Sentry errors + 5 Reddit complaints + 2 support tickets + declining PostHog retention = this feature is broken and users are churning."
+
+**Integration tiers by phase:**
+
+| Phase | Category | Integrations | What it enables |
+|-------|----------|-------------|-----------------|
+| **MVP (now)** | Product signals | Slack, Linear | Sprint context, team discussions |
+| **Phase 2** | Customer signals | Intercom, Zendesk, Discord | Support patterns, user feedback clustering |
+| **Phase 2** | Data/observability | PostHog, Amplitude, Sentry, Datadog | Usage metrics, error triage, retention analysis |
+| **Phase 3** | Community/social | Reddit, X, GitHub Issues, Discord | Public sentiment, feature requests, bug reports |
+| **Phase 3** | GTM/sales | HubSpot, Gong (soulcaster DNA) | Pipeline context, customer call insights |
+| **Phase 4** | Docs/design | Notion, Figma, Confluence | Spec context, design decisions |
+
+**Key capability unlocked per phase:**
+- Phase 2: **Proactive alerts** — "PostHog shows 40% drop in feature X usage since last deploy, Sentry has 12 new errors in that module"
+- Phase 3: **Cross-source clustering** — auto-group Reddit threads + GitHub issues + support tickets about the same problem
+- Phase 4: **Full context assembly** — every artifact (spec, design, ticket, conversation, metric) connected
+
+**Soulcaster connection:** The social listening + data enrichment patterns from soulcaster map directly here. Same architecture (MCP servers per source, agent-based synthesis), different domain.
+
 ### Mem0 / Graph Memory
 
 **What:** Replace file-based product knowledge with Mem0 (Redis-backed) for persistent cross-session memory with automatic extraction and conflict resolution. Add graph memory (Mem0g) for entity relationships.
@@ -97,5 +121,6 @@ Evaluated during hackathon (Feb 2026). Documented here to keep options open with
 
 ## Resources
 
+- [YC RFS: Cursor for Product Managers](https://www.ycombinator.com/rfs#cursor-for-product-managers) — YC is actively looking for this
 - [Agent SDK Hosting Guide](https://platform.claude.com/docs/en/agent-sdk/hosting) — deployment patterns, sandbox providers
 - [Claude Code SDK vs LangChain (Skywork AI)](https://skywork.ai/blog/claude-code-sdk-vs-langchain-which-is-better-for-developers/) — validates SDK-native approach
