@@ -2,12 +2,16 @@
 
 Agentic AI tool for startup PMs powered by Claude Opus 4.6. Connects to existing tools (Linear, Slack, Notion) and helps PMs make better product decisions by pulling together external signals and internal state. Built for the Anthropic hackathon (deadline: Feb 16, 2026).
 
+## Current State
+
+**Scaffold is complete and merged to `main`.** End-to-end chat works: message → FastAPI → Claude (Sonnet) → SSE → React UI. 40 backend tests pass, frontend builds clean. The agent layer currently uses the raw `anthropic` SDK — Track A replaces this with Claude Agent SDK.
+
 ## Tech Stack
 
-- **Backend:** Python 3.12+, FastAPI, Claude Agent SDK, uv (package manager)
+- **Backend:** Python 3.12+, FastAPI, uv (package manager), anthropic SDK (scaffold) → Claude Agent SDK (Track A)
 - **Frontend:** Next.js 15 (App Router), TypeScript, Tailwind CSS, shadcn/ui
 - **Infrastructure:** Redis (session state/cache), SQLite (hackathon) / PostgreSQL (prod), Docker
-- **AI Models:** Opus 4.6 (orchestrator + prioritization + doc agents), Sonnet 4.5 (research + backlog agents)
+- **AI Models:** Opus 4.6 (orchestrator + prioritization + doc agents), Sonnet 4.5 (scaffold chat + research + backlog agents)
 - **Integrations:** MCP protocol — Linear, Slack, Web Search (stdio transport for hackathon)
 
 ## Project Structure
@@ -16,40 +20,78 @@ Agentic AI tool for startup PMs powered by Claude Opus 4.6. Connects to existing
 velocity/
 ├── backend/
 │   ├── app/
-│   │   ├── main.py              # FastAPI entry point
+│   │   ├── main.py              # FastAPI entry point + CORS
 │   │   ├── config.py            # Pydantic settings + env vars
-│   │   ├── agent.py             # Claude Agent SDK setup (orchestrator + subagents)
-│   │   ├── sse_bridge.py        # StreamEvent → SSE translation
-│   │   ├── models.py            # Pydantic request/response schemas
+│   │   ├── agent.py             # Agent layer — generate_response() interface
+│   │   ├── sse_bridge.py        # (event_type, json_data) → ServerSentEvent
+│   │   ├── models.py            # Pydantic request/response schemas + SSE contracts
 │   │   └── routes/
 │   │       ├── chat.py          # POST /api/chat → SSE stream
-│   │       ├── sessions.py      # Session CRUD
+│   │       ├── sessions.py      # Session CRUD (in-memory for now)
 │   │       └── health.py        # Health check
-│   ├── tests/                   # pytest tests
+│   ├── tests/                   # pytest tests (40 passing)
+│   │   ├── conftest.py          # Shared fixtures (async client, mock anthropic)
+│   │   ├── test_chat.py         # SSE streaming tests
+│   │   ├── test_models.py       # Pydantic model tests
+│   │   ├── test_sessions.py     # Session CRUD tests
+│   │   └── test_health.py       # Health endpoint tests
 │   ├── memory/                  # Persistent product knowledge (file-based)
-│   ├── pyproject.toml
+│   │   ├── product-context.md   # Product overview (loaded by agent)
+│   │   ├── decisions/           # Decision log
+│   │   └── insights/            # Synthesized insights
+│   ├── pyproject.toml           # uv managed, [dependency-groups] dev for test deps
+│   ├── uv.lock
 │   └── Dockerfile
 ├── frontend/
-│   ├── app/                     # Next.js App Router pages
-│   ├── components/              # React components (chat/, sidebar/, ui/)
-│   ├── hooks/                   # Custom hooks (useChat, useAgentStream)
-│   ├── lib/                     # API client, types, utilities
+│   ├── app/                     # Next.js App Router (page.tsx = chat UI)
+│   ├── components/              # React components (chat/, ui/)
+│   │   └── chat/                # ChatInput, ChatMessages, AgentActivityPanel
+│   ├── hooks/
+│   │   └── useChat.ts           # Fetch-based SSE parser + state management
+│   ├── lib/
+│   │   ├── api.ts               # API client (relative /api, proxied by Next.js)
+│   │   └── types.ts             # TypeScript mirrors of backend Pydantic models
 │   ├── package.json
-│   └── next.config.ts
+│   └── next.config.ts           # API rewrite proxy → localhost:8000
 ├── docker-compose.yml           # Backend + Frontend + Redis
 ├── ARCHITECTURE.md              # Full system design (source of truth)
 ├── PRD.md                       # Product requirements
 └── CLAUDE.md                    # This file
 ```
 
+## Critical Interface
+
+`generate_response()` in `agent.py` is the boundary between agent logic and everything else:
+
+```python
+async def generate_response(
+    message: str, session_id: str, context: dict | None = None,
+) -> AsyncGenerator[tuple[str, str], None]:
+    """Yield (event_type, json_data) tuples for an SSE stream."""
+```
+
+Consumed by: `sse_bridge.py` → `routes/chat.py` → `EventSourceResponse` → frontend `useChat.ts`
+
+### SSE Event Contract
+
+| Event | Payload | Status |
+|-------|---------|--------|
+| `text` | `"bare string"` | Working |
+| `thinking` | `{"text": "..."}` | Track A |
+| `agent_activity` | `{"agent": "...", "status": "running\|completed", "task": "..."}` | Track A |
+| `citation` | `{"type": "slack\|linear\|web", "url": "...", "title": "...", "snippet": "..."}` | Track A |
+| `tool_call` | `{"tool": "...", "params": {...}}` | Track A |
+| `error` | `{"message": "...", "recoverable": bool}` | Working |
+| `done` | `{"tokens_used": {"input": N, "output": N}, "agents_used": [...]}` | Working |
+
 ## Commands
 
 ### Backend
 ```bash
 cd backend
-uv sync                                    # Install dependencies (creates .venv automatically)
+uv sync                                    # Install deps (test deps via [dependency-groups] dev)
 uv run uvicorn app.main:app --reload --port 8000  # Run dev server
-uv run pytest                              # Run tests
+uv run pytest                              # Run tests (40 passing)
 uv run pytest -x                           # Run tests, stop on first failure
 uv add <package>                           # Add a dependency
 ```
