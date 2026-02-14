@@ -102,3 +102,16 @@ class ToolCallData(BaseModel):
     """data for event: tool_call"""
     tool: str
     params: dict
+
+
+# ---------------------------------------------------------------------------
+# Persistence models (Track C — messages table)
+# ---------------------------------------------------------------------------
+
+class SessionMessage(BaseModel):
+    """A single message in a conversation session."""
+    id: str
+    session_id: str
+    role: Literal["user", "assistant"]
+    content: str
+    created_at: datetime
