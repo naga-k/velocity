@@ -166,7 +166,8 @@ def mock_agent_sdk():
 
     mock_client = MagicMock()
     mock_client.connect = AsyncMock()
-    mock_client.disconnect = MagicMock()
+    mock_client.disconnect = AsyncMock()
+    mock_client.query = AsyncMock()
     mock_client.receive_response = MagicMock(
         side_effect=lambda: _mock_receive_response(messages)
     )

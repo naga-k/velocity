@@ -28,7 +28,7 @@ from claude_agent_sdk import (
     create_sdk_mcp_server,
     tool,
 )
-from claude_agent_sdk.types import StreamEvent
+from claude_agent_sdk.types import StreamEvent, ThinkingConfigAdaptive
 
 from app.config import settings
 from app.models import (
@@ -231,8 +231,9 @@ def _build_options() -> ClaudeAgentOptions:
         max_turns=settings.max_turns,
         max_budget_usd=settings.max_budget_per_session_usd,
         include_partial_messages=True,
-        thinking={"type": "adaptive"},
+        thinking=ThinkingConfigAdaptive(type="adaptive"),
         cwd=str(MEMORY_DIR.parent),
+        env={"ANTHROPIC_API_KEY": settings.anthropic_api_key},
     )
 
 
@@ -244,6 +245,7 @@ async def _get_or_create_client(session_id: str) -> ClaudeSDKClient:
     """Return an existing client for the session, or create a new one."""
     if session_id not in _sessions:
         client = ClaudeSDKClient(options=_build_options())
+        await client.connect()  # start subprocess — no prompt
         _sessions[session_id] = client
     return _sessions[session_id]
 
@@ -253,7 +255,7 @@ async def cleanup_session(session_id: str) -> None:
     client = _sessions.pop(session_id, None)
     if client is not None:
         try:
-            client.disconnect()
+            await client.disconnect()
         except Exception:
             logger.warning("Error disconnecting session %s", session_id)
 
@@ -295,7 +297,7 @@ async def generate_response(
 
     try:
         client = await _get_or_create_client(session_id)
-        await client.connect(prompt=message)
+        await client.query(message)
 
         async for msg in client.receive_response():
             # --- Full assistant messages (content blocks) ---
