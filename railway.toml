@@ -1,0 +1,19 @@
+# Railway deployment configuration for Velocity backend
+
+[build]
+builder = "dockerfile"
+dockerfilePath = "backend/Dockerfile"
+
+[deploy]
+healthcheckPath = "/api/health"
+healthcheckTimeout = 100
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
+
+# Environment variables (set in Railway dashboard)
+# ANTHROPIC_API_KEY - required
+# SLACK_BOT_TOKEN - optional
+# LINEAR_API_KEY - optional
+# REDIS_URL - set to your Railway Redis instance URL
+# DATABASE_URL - defaults to sqlite:///./data/app.db
+# FRONTEND_URL - set to your Vercel deployment URL
