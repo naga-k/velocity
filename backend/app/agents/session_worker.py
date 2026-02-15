@@ -17,12 +17,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from claude_agent_sdk import (
-    AssistantMessage,
-    ResultMessage,
-    StreamEvent,
-    ToolUseBlock,
-)
+from claude_agent_sdk import AssistantMessage, ResultMessage, ToolUseBlock
+from claude_agent_sdk.types import StreamEvent
 
 from app.config import settings
 from app.daytona_manager import sandbox_manager

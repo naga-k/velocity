@@ -12,8 +12,7 @@ import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from daytona import AsyncDaytona
-from daytona.sync.sandbox import Sandbox
+from daytona import AsyncDaytona, Sandbox
 
 from app.config import settings
 
