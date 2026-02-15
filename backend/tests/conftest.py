@@ -263,8 +263,10 @@ def mock_agent_sdk():
             mock_settings.max_budget_per_session_usd = 2.0
             mock_settings.max_turns = 30
             agent_mod._workers.clear()
+            agent_mod._worker_locks.clear()
             yield {
                 "client": mock_client,
                 "set_messages": set_messages,
             }
             agent_mod._workers.clear()
+            agent_mod._worker_locks.clear()

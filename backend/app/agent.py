@@ -260,9 +260,21 @@ class _SessionWorker:
                     async for msg in client.receive_response():
                         await out_q.put(msg)
                 except Exception as exc:
-                    await out_q.put(exc)
+                    try:
+                        await out_q.put(exc)
+                    except Exception:
+                        logger.error(
+                            "Failed to enqueue exception for session %s",
+                            self.session_id,
+                        )
                 finally:
-                    await out_q.put(_SENTINEL)
+                    try:
+                        await out_q.put(_SENTINEL)
+                    except Exception:
+                        logger.error(
+                            "Failed to enqueue sentinel for session %s",
+                            self.session_id,
+                        )
 
         except Exception as exc:
             logger.exception("Session worker %s crashed", self.session_id)
@@ -271,9 +283,11 @@ class _SessionWorker:
         finally:
             try:
                 await client.disconnect()
-            except Exception:
+            except Exception as e:
                 logger.warning(
-                    "Error disconnecting client for session %s", self.session_id
+                    "Error disconnecting client for session %s: %s",
+                    self.session_id,
+                    e,
                 )
 
     async def query_and_stream(
@@ -297,11 +311,15 @@ class _SessionWorker:
             try:
                 await asyncio.wait_for(self._task, timeout=10.0)
             except asyncio.TimeoutError:
-                self._task.cancel()
                 logger.warning(
-                    "Session worker %s did not stop in time, cancelled",
+                    "Session worker %s did not stop in time, cancelling",
                     self.session_id,
                 )
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
 
 
 # ---------------------------------------------------------------------------
@@ -309,20 +327,32 @@ class _SessionWorker:
 # ---------------------------------------------------------------------------
 
 _workers: dict[str, _SessionWorker] = {}
+_worker_locks: dict[str, asyncio.Lock] = {}
 
 
 async def _get_or_create_worker(session_id: str) -> _SessionWorker:
     """Return an existing worker for this session, or create and start one."""
     if session_id in _workers:
         return _workers[session_id]
-    worker = _SessionWorker(session_id)
-    await worker.start()
-    _workers[session_id] = worker
-    return worker
+
+    # Per-session lock prevents duplicate workers from concurrent requests
+    if session_id not in _worker_locks:
+        _worker_locks[session_id] = asyncio.Lock()
+
+    async with _worker_locks[session_id]:
+        # Double-check after acquiring lock
+        if session_id in _workers:
+            return _workers[session_id]
+
+        worker = _SessionWorker(session_id)
+        await worker.start()
+        _workers[session_id] = worker
+        return worker
 
 
 async def remove_session_client(session_id: str) -> None:
     """Stop and remove the worker for a session."""
+    _worker_locks.pop(session_id, None)
     worker = _workers.pop(session_id, None)
     if worker is not None:
         try:
