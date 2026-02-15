@@ -62,6 +62,7 @@ export interface AgentActivityData {
   agent: string;
   status: "running" | "completed";
   task: string;
+  thinking?: string;
 }
 
 export interface CitationData {

@@ -149,7 +149,37 @@ export function useChat(sessionId: string): UseChatReturn {
                 break;
               }
 
-              // thinking, citation, tool_call — handled by Track A/B
+              case "citation": {
+                // Add citation to current assistant message
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantId
+                      ? { ...m, citations: [...(m.citations || []), data] }
+                      : m
+                  )
+                );
+                break;
+              }
+
+              case "thinking": {
+                const thinkingData = data as { text: string };
+                // Store thinking text in current agent activity
+                setAgentActivity((prev) => {
+                  if (prev.length === 0) return prev;
+                  const updated = [...prev];
+                  const lastAgent = updated[updated.length - 1];
+                  if (lastAgent.status === "running") {
+                    lastAgent.thinking = thinkingData.text;
+                  }
+                  return updated;
+                });
+                break;
+              }
+
+              case "tool_call":
+                // Silently handled - visible in agent_activity
+                break;
+
               default:
                 break;
             }
