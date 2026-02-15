@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.agent import disconnect_all_clients
+from app.agents import disconnect_all_clients
 from app.config import settings
 from app.database import init_db
 from app.redis_client import connect_redis, disconnect_redis

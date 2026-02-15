@@ -27,6 +27,7 @@ class Settings(BaseSettings):
 
     # Integrations
     slack_bot_token: str = ""
+    slack_team_id: str = ""
     linear_api_key: str = ""
 
     # Budget

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 
-from app.agent import remove_session_client
+from app.agents import remove_session_client
 from app.models import SessionCreate, SessionResponse
 from app import session_store
 

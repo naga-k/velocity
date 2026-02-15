@@ -62,6 +62,7 @@ export interface AgentActivityData {
   agent: string;
   status: "running" | "completed";
   task: string;
+  thinking?: string;
 }
 
 export interface CitationData {
@@ -69,6 +70,11 @@ export interface CitationData {
   url: string;
   title: string;
   snippet: string;
+}
+
+export interface ToolCallData {
+  tool: string;
+  params: Record<string, unknown>;
 }
 
 // ---------------------------------------------------------------------------
@@ -80,6 +86,7 @@ export interface Message {
   role: "user" | "assistant";
   content: string;
   citations: CitationData[];
+  toolCalls?: ToolCallData[];
   isStreaming?: boolean;
 }
 

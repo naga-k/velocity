@@ -24,6 +24,7 @@ dev = [
     "pytest-asyncio>=0.25.0",
     "httpx>=0.28.0",
     "fakeredis>=2.33.0",
+    "requests>=2.32.5",
 ]
 
 [tool.hatch.build.targets.wheel]
