@@ -10,8 +10,12 @@ import logging
 from claude_agent_sdk import tool
 
 from app.config import settings
+from app.redis_client import cache_get, cache_set
 
 logger = logging.getLogger(__name__)
+
+# Cache TTLs
+CACHE_TTL_LINEAR_METADATA = 3600  # 1 hour for team/state metadata
 
 
 @tool(
@@ -37,28 +41,32 @@ async def create_linear_issue(args: dict) -> dict:
     description = args.get("description", "")
     priority = args.get("priority", 0)
 
-    # Get the first team
-    teams_query = "query { teams { nodes { id name } } }"
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://api.linear.app/graphql",
-                json={"query": teams_query},
-                headers={"Authorization": settings.linear_api_key},
-                timeout=10.0,
-            )
-            response.raise_for_status()
-            data = response.json()
-            teams = data.get("data", {}).get("teams", {}).get("nodes", [])
-            if not teams:
-                return {"content": [{"type": "text", "text": "No teams found"}]}
-            team_id = teams[0]["id"]
-    except httpx.HTTPError as e:
-        logger.exception("HTTP error fetching teams")
-        return {"content": [{"type": "text", "text": f"Network error: {str(e)}"}]}
-    except Exception as e:
-        logger.exception("Error fetching teams")
-        return {"content": [{"type": "text", "text": f"Error: {str(e)}"}]}
+    # Get the first team (with Redis caching)
+    team_id = await cache_get("linear:team:first")
+    if team_id is None:
+        teams_query = "query { teams { nodes { id name } } }"
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    "https://api.linear.app/graphql",
+                    json={"query": teams_query},
+                    headers={"Authorization": settings.linear_api_key},
+                    timeout=10.0,
+                )
+                response.raise_for_status()
+                data = response.json()
+                teams = data.get("data", {}).get("teams", {}).get("nodes", [])
+                if not teams:
+                    return {"content": [{"type": "text", "text": "No teams found"}]}
+                team_id = teams[0]["id"]
+                # Cache team ID for 1 hour
+                await cache_set("linear:team:first", team_id, ttl=CACHE_TTL_LINEAR_METADATA)
+        except httpx.HTTPError as e:
+            logger.exception("HTTP error fetching teams")
+            return {"content": [{"type": "text", "text": f"Network error: {str(e)}"}]}
+        except Exception as e:
+            logger.exception("Error fetching teams")
+            return {"content": [{"type": "text", "text": f"Error: {str(e)}"}]}
 
     # Use GraphQL variables to prevent injection
     mutation = """
@@ -201,46 +209,53 @@ async def update_linear_issue(args: dict) -> dict:
             logger.exception("Error fetching user")
             return {"content": [{"type": "text", "text": f"Error: {str(e)}"}]}
 
-    # Get state ID from name
+    # Get state ID from name (with Redis caching)
     if state_name:
-        states_query = """
-        query {
-          workflowStates {
-            nodes { id name }
-          }
-        }
-        """
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    "https://api.linear.app/graphql",
-                    json={"query": states_query},
-                    headers={"Authorization": settings.linear_api_key},
-                    timeout=10.0,
-                )
-                response.raise_for_status()
-                data = response.json()
-                states = data.get("data", {}).get("workflowStates", {}).get("nodes", [])
-                matching_state = next(
-                    (s for s in states if s["name"].lower() == state_name.lower()), None
-                )
-                if matching_state:
-                    input_obj["stateId"] = matching_state["id"]
-                else:
-                    return {
-                        "content": [
-                            {
-                                "type": "text",
-                                "text": f"State '{state_name}' not found",
-                            }
-                        ]
+        # Try to get cached states
+        states = await cache_get("linear:workflow_states")
+        if states is None:
+            states_query = """
+            query {
+              workflowStates {
+                nodes { id name }
+              }
+            }
+            """
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        "https://api.linear.app/graphql",
+                        json={"query": states_query},
+                        headers={"Authorization": settings.linear_api_key},
+                        timeout=10.0,
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    states = data.get("data", {}).get("workflowStates", {}).get("nodes", [])
+                    # Cache states for 1 hour
+                    await cache_set("linear:workflow_states", states, ttl=CACHE_TTL_LINEAR_METADATA)
+            except httpx.HTTPError as e:
+                logger.exception("HTTP error fetching states")
+                return {"content": [{"type": "text", "text": f"Network error: {str(e)}"}]}
+            except Exception as e:
+                logger.exception("Error fetching states")
+                return {"content": [{"type": "text", "text": f"Error: {str(e)}"}]}
+
+        # Find matching state
+        matching_state = next(
+            (s for s in states if s["name"].lower() == state_name.lower()), None
+        )
+        if matching_state:
+            input_obj["stateId"] = matching_state["id"]
+        else:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"State '{state_name}' not found",
                     }
-        except httpx.HTTPError as e:
-            logger.exception("HTTP error fetching states")
-            return {"content": [{"type": "text", "text": f"Network error: {str(e)}"}]}
-        except Exception as e:
-            logger.exception("Error fetching states")
-            return {"content": [{"type": "text", "text": f"Error: {str(e)}"}]}
+                ]
+            }
 
     if not input_obj:
         return {"content": [{"type": "text", "text": "No updates specified"}]}

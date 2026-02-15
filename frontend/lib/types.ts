@@ -72,6 +72,11 @@ export interface CitationData {
   snippet: string;
 }
 
+export interface ToolCallData {
+  tool: string;
+  params: Record<string, unknown>;
+}
+
 // ---------------------------------------------------------------------------
 // UI state types
 // ---------------------------------------------------------------------------
@@ -81,6 +86,7 @@ export interface Message {
   role: "user" | "assistant";
   content: string;
   citations: CitationData[];
+  toolCalls?: ToolCallData[];
   isStreaming?: boolean;
 }
 

@@ -11,6 +11,7 @@ import type {
   Message,
   SSEEventType,
   TokenUsage,
+  ToolCallData,
 } from "@/lib/types";
 
 interface UseChatReturn {
@@ -176,9 +177,20 @@ export function useChat(sessionId: string): UseChatReturn {
                 break;
               }
 
-              case "tool_call":
-                // Silently handled - visible in agent_activity
+              case "tool_call": {
+                const toolCall = data as ToolCallData;
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantId
+                      ? {
+                          ...m,
+                          toolCalls: [...(m.toolCalls || []), toolCall],
+                        }
+                      : m
+                  )
+                );
                 break;
+              }
 
               default:
                 break;
