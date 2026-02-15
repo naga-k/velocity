@@ -1,17 +1,11 @@
 FROM python:3.12-slim
 
 WORKDIR /app
-# Railway deployment
 
-# Create non-root user for Claude Code CLI
-RUN useradd -m -u 1000 appuser
-
-# Install git (needed for SDK fork dependency), Node.js (for claude-code CLI), and clean up
+# Install git (needed for SDK fork dependency) and clean up
+# Note: Node.js and claude-code CLI now run inside Daytona sandboxes, not in this container
 RUN apt-get update && \
-    apt-get install -y git curl && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && \
-    npm install -g @anthropic-ai/claude-code && \
+    apt-get install -y git && \
     rm -rf /var/lib/apt/lists/*
 
 # Install uv
@@ -25,20 +19,9 @@ RUN uv sync --frozen --no-dev
 
 # Copy application code
 COPY app/ app/
-COPY memory/ memory/
 
-# Copy entrypoint script
-COPY entrypoint.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
-
-# Set memory path to persistent volume
-ENV MEMORY_PATH=/app/data/memory
-
-# Create data directory and set permissions
-RUN mkdir -p /app/data && chown -R appuser:appuser /app
-USER appuser
+# Note: memory/ directory not copied - agents now run in Daytona sandboxes
 
 EXPOSE 8000
 
-ENTRYPOINT ["/entrypoint.sh"]
 CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

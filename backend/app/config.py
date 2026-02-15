@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     slack_team_id: str = ""
     linear_api_key: str = ""
 
+    # Daytona Sandboxes
+    daytona_api_key: str = ""
+    daytona_api_url: str = "https://app.daytona.io/api"
+    daytona_target: str = "us"
+
     # Budget
     max_budget_per_session_usd: float = 2.0
     max_turns: int = 30
@@ -45,6 +50,10 @@ class Settings(BaseSettings):
     @property
     def linear_configured(self) -> bool:
         return bool(self.linear_api_key)
+
+    @property
+    def daytona_configured(self) -> bool:
+        return bool(self.daytona_api_key)
 
 
 settings = Settings()

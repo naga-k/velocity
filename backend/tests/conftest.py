@@ -216,8 +216,82 @@ async def _mock_receive_response(messages):
 
 
 @pytest.fixture
+def mock_daytona_sandbox():
+    """Mock Daytona sandbox for testing sandbox-based session worker.
+
+    Simulates sandbox creation, script upload, and command execution that emits
+    JSON lines to stdout (matching sandbox_runner.py output format).
+
+    Yields a dict with a helper to set stdout lines for testing different scenarios.
+
+    Usage:
+        def test_chat(mock_daytona_sandbox):
+            mock_daytona_sandbox["set_stdout_lines"]([
+                '{"type": "text_delta", "text": "Hello from sandbox"}',
+                '{"type": "done", "tokens_used": {"input": 25, "output": 10}, "agents_used": []}',
+            ])
+    """
+    import app.daytona_manager as dm_mod
+    import app.agents.session_worker as worker_mod
+
+    # Default stdout lines (matching sandbox_runner.py output)
+    mock_stdout_lines = [
+        '{"type": "text_delta", "text": "Hello"}',
+        '{"type": "text_delta", "text": " from"}',
+        '{"type": "text_delta", "text": " sandbox!"}',
+        '{"type": "done", "tokens_used": {"input": 25, "output": 10}, "agents_used": []}',
+    ]
+
+    async def mock_create_sandbox(session_id, env_vars=None):
+        """Mock sandbox creation - returns a fake sandbox object."""
+        mock_sandbox = MagicMock()
+        mock_sandbox.id = f"sandbox-{session_id}"
+        mock_sandbox.fs = MagicMock()
+        mock_sandbox.process = MagicMock()
+        mock_sandbox.code_interpreter = MagicMock()
+        return mock_sandbox
+
+    async def mock_upload_script(session_id, script_content, remote_path):
+        """Mock script upload - always succeeds."""
+        return True
+
+    async def mock_execute_streaming(session_id, command, on_stdout, on_stderr=None, timeout=600):
+        """Mock command execution - streams JSON lines to on_stdout callback."""
+        # Simulate streaming each JSON line
+        for line in mock_stdout_lines:
+            await on_stdout(line)
+        return {"exit_code": 0, "timed_out": False, "error": None}
+
+    async def mock_cleanup_sandbox(session_id):
+        """Mock sandbox cleanup - no-op."""
+        pass
+
+    def set_stdout_lines(lines):
+        """Helper to set custom stdout lines for test scenarios."""
+        nonlocal mock_stdout_lines
+        mock_stdout_lines = lines
+
+    with patch.object(dm_mod.sandbox_manager, "create_sandbox", side_effect=mock_create_sandbox):
+        with patch.object(dm_mod.sandbox_manager, "upload_script", side_effect=mock_upload_script):
+            with patch.object(dm_mod.sandbox_manager, "execute_streaming", side_effect=mock_execute_streaming):
+                with patch.object(dm_mod.sandbox_manager, "cleanup_sandbox", side_effect=mock_cleanup_sandbox):
+                    # Clear worker pool before test
+                    worker_mod._workers.clear()
+                    worker_mod._worker_locks.clear()
+
+                    yield {"set_stdout_lines": set_stdout_lines}
+
+                    # Clear worker pool after test
+                    worker_mod._workers.clear()
+                    worker_mod._worker_locks.clear()
+
+
+@pytest.fixture
 def mock_agent_sdk():
     """Patch ClaudeSDKClient to return canned responses.
+
+    NOTE: This fixture is DEPRECATED for Daytona sandbox architecture.
+    Use mock_daytona_sandbox instead for new tests.
 
     Yields a dict with the mock client and helper to set response messages.
 

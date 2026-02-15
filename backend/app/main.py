@@ -8,17 +8,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.agents import disconnect_all_clients
 from app.config import settings
 from app.database import init_db
+from app.daytona_manager import sandbox_manager
 from app.redis_client import connect_redis, disconnect_redis
 from app.routes import chat, health, sessions
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: init DB + Redis. Shutdown: disconnect clients + Redis."""
+    """Startup: init DB + Redis + Daytona. Shutdown: disconnect clients + Redis + Daytona."""
     await init_db()
     await connect_redis()
+    await sandbox_manager.initialize()
     yield
     await disconnect_all_clients()
+    await sandbox_manager.shutdown()
     await disconnect_redis()
 
 
