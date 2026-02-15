@@ -53,38 +53,46 @@ async def create_linear_issue(args: dict) -> dict:
             if not teams:
                 return {"content": [{"type": "text", "text": "No teams found"}]}
             team_id = teams[0]["id"]
+    except httpx.HTTPError as e:
+        logger.exception("HTTP error fetching teams")
+        return {"content": [{"type": "text", "text": f"Network error: {str(e)}"}]}
     except Exception as e:
         logger.exception("Error fetching teams")
         return {"content": [{"type": "text", "text": f"Error: {str(e)}"}]}
 
-    # Escape description for GraphQL
-    escaped_desc = description.replace('"', '\\"').replace("\n", "\\n")
-
-    mutation = f"""
-    mutation {{
-      issueCreate(input: {{
-        teamId: "{team_id}"
-        title: "{title}"
-        description: "{escaped_desc}"
-        priority: {priority}
-      }}) {{
+    # Use GraphQL variables to prevent injection
+    mutation = """
+    mutation CreateIssue($teamId: String!, $title: String!, $description: String, $priority: Int) {
+      issueCreate(input: {
+        teamId: $teamId
+        title: $title
+        description: $description
+        priority: $priority
+      }) {
         success
-        issue {{
+        issue {
           id
           identifier
           title
           url
-          state {{ name }}
-        }}
-      }}
-    }}
+          state { name }
+        }
+      }
+    }
     """
+
+    variables = {
+        "teamId": team_id,
+        "title": title,
+        "description": description,
+        "priority": priority,
+    }
 
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "https://api.linear.app/graphql",
-                json={"query": mutation},
+                json={"query": mutation, "variables": variables},
                 headers={"Authorization": settings.linear_api_key},
                 timeout=10.0,
             )
@@ -106,6 +114,9 @@ async def create_linear_issue(args: dict) -> dict:
                 return {"content": [{"type": "text", "text": msg}]}
             else:
                 return {"content": [{"type": "text", "text": "Failed to create issue"}]}
+    except httpx.HTTPError as e:
+        logger.exception("HTTP error creating Linear issue")
+        return {"content": [{"type": "text", "text": f"Network error: {str(e)}"}]}
     except Exception as e:
         logger.exception("Error creating Linear issue")
         return {"content": [{"type": "text", "text": f"Error: {str(e)}"}]}
@@ -140,18 +151,17 @@ async def update_linear_issue(args: dict) -> dict:
     title = args.get("title")
     description = args.get("description")
 
-    # Build update input
-    updates = []
+    # Build update input object
+    input_obj: dict[str, any] = {}
 
     if title:
-        updates.append(f'title: "{title}"')
+        input_obj["title"] = title
 
     if description:
-        escaped_desc = description.replace('"', '\\"').replace("\n", "\\n")
-        updates.append(f'description: "{escaped_desc}"')
+        input_obj["description"] = description
 
     if priority is not None:
-        updates.append(f'priority: {priority}')
+        input_obj["priority"] = priority
 
     # Get assignee ID from email
     if assignee_email:
@@ -174,7 +184,7 @@ async def update_linear_issue(args: dict) -> dict:
                 data = response.json()
                 users = data.get("data", {}).get("users", {}).get("nodes", [])
                 if users:
-                    updates.append(f'assigneeId: "{users[0]["id"]}"')
+                    input_obj["assigneeId"] = users[0]["id"]
                 else:
                     return {
                         "content": [
@@ -184,6 +194,9 @@ async def update_linear_issue(args: dict) -> dict:
                             }
                         ]
                     }
+        except httpx.HTTPError as e:
+            logger.exception("HTTP error fetching user")
+            return {"content": [{"type": "text", "text": f"Network error: {str(e)}"}]}
         except Exception as e:
             logger.exception("Error fetching user")
             return {"content": [{"type": "text", "text": f"Error: {str(e)}"}]}
@@ -212,7 +225,7 @@ async def update_linear_issue(args: dict) -> dict:
                     (s for s in states if s["name"].lower() == state_name.lower()), None
                 )
                 if matching_state:
-                    updates.append(f'stateId: "{matching_state["id"]}"')
+                    input_obj["stateId"] = matching_state["id"]
                 else:
                     return {
                         "content": [
@@ -222,35 +235,44 @@ async def update_linear_issue(args: dict) -> dict:
                             }
                         ]
                     }
+        except httpx.HTTPError as e:
+            logger.exception("HTTP error fetching states")
+            return {"content": [{"type": "text", "text": f"Network error: {str(e)}"}]}
         except Exception as e:
             logger.exception("Error fetching states")
             return {"content": [{"type": "text", "text": f"Error: {str(e)}"}]}
 
-    if not updates:
+    if not input_obj:
         return {"content": [{"type": "text", "text": "No updates specified"}]}
 
-    mutation = f"""
-    mutation {{
-      issueUpdate(id: "{issue_id}", input: {{ {", ".join(updates)} }}) {{
+    # Use GraphQL variables to prevent injection
+    mutation = """
+    mutation UpdateIssue($issueId: String!, $input: IssueUpdateInput!) {
+      issueUpdate(id: $issueId, input: $input) {
         success
-        issue {{
+        issue {
           id
           identifier
           title
           url
-          state {{ name }}
-          assignee {{ name email }}
+          state { name }
+          assignee { name email }
           priority
-        }}
-      }}
-    }}
+        }
+      }
+    }
     """
+
+    variables = {
+        "issueId": issue_id,
+        "input": input_obj,
+    }
 
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 "https://api.linear.app/graphql",
-                json={"query": mutation},
+                json={"query": mutation, "variables": variables},
                 headers={"Authorization": settings.linear_api_key},
                 timeout=10.0,
             )
@@ -276,6 +298,9 @@ async def update_linear_issue(args: dict) -> dict:
                 return {"content": [{"type": "text", "text": msg}]}
             else:
                 return {"content": [{"type": "text", "text": "Failed to update issue"}]}
+    except httpx.HTTPError as e:
+        logger.exception("HTTP error updating Linear issue")
+        return {"content": [{"type": "text", "text": f"Network error: {str(e)}"}]}
     except Exception as e:
         logger.exception("Error updating Linear issue")
         return {"content": [{"type": "text", "text": f"Error: {str(e)}"}]}
