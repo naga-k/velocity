@@ -3,9 +3,12 @@ FROM python:3.12-slim
 WORKDIR /app
 # Railway deployment
 
-# Install git (needed for SDK fork dependency) and clean up
+# Install git (needed for SDK fork dependency), Node.js (for claude-code CLI), and clean up
 RUN apt-get update && \
-    apt-get install -y git && \
+    apt-get install -y git curl && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    npm install -g @anthropic-ai/claude-code && \
     rm -rf /var/lib/apt/lists/*
 
 # Install uv
