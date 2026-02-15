@@ -13,7 +13,7 @@ Track A (Agent SDK + MCP) is **merged to main** and working. Updated this doc to
 
 **1. No `allowed_tools` whitelist.** Removed — was blocking MCP tool discovery. `bypassPermissions` mode handles everything.
 
-**2. Fresh client per query, no session reuse.** SDK resume is broken (returns 0-token empty responses). Each message creates a fresh `ClaudeSDKClient`. Upstream fix submitted as PR #572.
+**2. Session-scoped client reuse.** `ClaudeSDKClient` instances are kept alive per session via `_clients` dict in `agent.py`. The CLI subprocess maintains full conversation history. Broken clients are evicted and recreated on error.
 
 **3. SDK fork dependency.** Using `naga-k/claude-agent-sdk-python` branch `fix/558-message-buffer-deadlock` to fix a buffer deadlock bug. Installed via `[tool.uv.sources]` git override.
 
@@ -460,7 +460,7 @@ async for msg in client.receive_response():
 - Subagents CANNOT spawn their own subagents (no nested delegation)
 - Don't include `Task` in a subagent's `tools` array
 - Subagent transcripts persist independently and survive main conversation compaction
-- **Resume is currently broken** — SDK returns empty 0-token responses when using `resume=session_id`. We use fresh-client-per-query as a workaround. See [SDK PR #572](https://github.com/anthropics/claude-agent-sdk-python/pull/572) for the upstream fix.
+- **Session-scoped client reuse** — `ClaudeSDKClient` instances are kept alive per session in `agent.py._clients`. Multi-turn context is maintained by the CLI subprocess. Broken clients are evicted and recreated automatically.
 - We also depend on a fork branch (`fix/558-message-buffer-deadlock`) that fixes a buffer deadlock bug (#558) in the SDK's message stream
 
 ---
@@ -771,12 +771,11 @@ async def chat(request: ChatRequest) -> EventSourceResponse:
 
 ```python
 # agent.py — generate_response() is the critical interface
-# Creates a FRESH ClaudeSDKClient per query (no session reuse — see SDK bug notes)
+# Reuses ClaudeSDKClient per session for multi-turn conversation context
 async def generate_response(message, session_id, context=None):
-    client = ClaudeSDKClient(options=_build_options())
+    client = await _get_or_create_client(session_id)
     try:
-        await client.connect()
-        await client.query(message)
+        await client.query(message, session_id=session_id)
 
         async for msg in client.receive_response():
             if isinstance(msg, StreamEvent):
@@ -809,10 +808,10 @@ async def stream_sse_events(event_source):
 ```
 
 **Key design decisions:**
-- **Fresh client per query** — SDK resume is broken (returns 0-token empty responses). Each message is an independent turn until upstream is fixed.
+- **Session-scoped client reuse** — `ClaudeSDKClient` instances are kept alive per session in `_clients` dict. Multi-turn context maintained by the CLI subprocess. Broken clients evicted on error.
 - **Three-layer bridge** — route handler has zero logic, agent layer handles SDK complexity, SSE bridge handles wire format. Each layer is independently testable.
 - **Duplicate text suppression** — StreamEvent deltas and AssistantMessage TextBlocks can emit the same text. `has_streamed_text` flag prevents doubling.
-- **Guaranteed cleanup** — `try/finally` ensures `client.disconnect()` even on exceptions. `done_emitted` flag ensures a `done` event is always sent.
+- **Guaranteed done event** — `done_emitted` flag ensures a `done` event is always sent even on exceptions.
 
 ### 7.3 Streaming Architecture
 
@@ -1208,8 +1207,8 @@ LOG_LEVEL=INFO
 - [x] Custom PM tools via `@tool` decorator (read_product_context, save_insight)
 - [x] Streaming: text deltas, thinking, agent_activity, tool_call events
 - [x] Adaptive thinking (`ThinkingConfigAdaptive`)
-- [x] SDK bug workarounds: fresh-client-per-query, buffer deadlock fix
-- [x] Error handling: ClaudeSDKError, guaranteed disconnect, done fallback
+- [x] Session-scoped client reuse with automatic error recovery
+- [x] Error handling: ClaudeSDKError, client eviction, done fallback
 - [x] Path traversal protection on save_insight
 - [x] Backend tests passing (58 tests)
 - **Verified:** Subagent dispatch works (backlog agent ran Glob/Grep/Read/Bash tools)
@@ -1269,10 +1268,10 @@ LOG_LEVEL=INFO
 | Risk | Likelihood | Impact | Mitigation | Status |
 |------|-----------|--------|-----------|--------|
 | **Agent responses too slow** (multi-hop subagents add latency) | High | High | Parallelize subagents where possible. Use Sonnet for fast subagents. Set timeouts. Show agent activity so user knows it's working. | Active |
-| **SDK resume broken** (no multi-turn context) | Confirmed | Medium | Fresh client per query. Each message is independent. Context lost between turns. Upstream PR #572 submitted. | Workaround in place |
+| **SDK resume broken** (no multi-turn context) | ~~Confirmed~~ Fixed | Medium | Session-scoped client reuse implemented. CLI subprocess maintains conversation history. | Resolved |
 | **SDK buffer deadlock** (#558) | Confirmed | High | Using fork branch `fix/558-message-buffer-deadlock`. Draft PR #572 submitted upstream. | Workaround in place |
 | **MCP integration breaks during demo** | Medium | High | Cache recent results. Build fallback responses with cached data. Test on actual Linear/Slack data before demo. | Active |
-| **Context rot on long conversations** | Low (for now) | Medium | Fresh-client-per-query means no context accumulation. When resume is fixed, use aggressive compaction + subagent isolation. | Deferred |
+| **Context rot on long conversations** | Medium | Medium | Client reuse means context accumulates. SDK handles compaction internally. Subagent isolation helps. | Active |
 | **$500 API credits run out** | Medium | Critical | Use Sonnet for high-volume subagents. Cache aggressively. Monitor spend daily. Per-session budget via `max_budget_usd`. | Active |
 | **Cloud deployment issues** | Medium | High | Deploy to cloud on Day 5, not last day. Have Docker Compose local fallback for demo. | Active |
 | **Opus 4.6 model availability** | Low | Critical | Fallback to Sonnet 4.5. Model is configurable via env var. | Active |
@@ -1294,7 +1293,7 @@ LOG_LEVEL=INFO
 
 5. **allowed_tools whitelist vs bypassPermissions?** → **bypassPermissions only, no whitelist.** `allowed_tools` was blocking MCP tools from being discovered. `bypassPermissions` handles everything for hackathon scope.
 
-6. **Session reuse vs fresh client per query?** → **Fresh client per query.** SDK resume is broken (0-token responses). Each message is independent until upstream fix merges.
+6. **Session reuse vs fresh client per query?** → **Session-scoped client reuse.** `ClaudeSDKClient` kept alive per session in `_clients` dict. CLI subprocess maintains conversation history. Broken clients evicted and recreated on error.
 
 7. **SDK dependency: upstream vs fork?** → **Fork branch** (`naga-k/claude-agent-sdk-python`, branch `fix/558-message-buffer-deadlock`) via `[tool.uv.sources]` git override. Draft PR #572 submitted upstream. Will switch back to upstream when merged.
 

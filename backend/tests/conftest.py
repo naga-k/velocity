@@ -248,6 +248,8 @@ def mock_agent_sdk():
             side_effect=lambda: _mock_receive_response(messages)
         )
 
+    import app.agent as agent_mod
+
     with patch("app.agent.ClaudeSDKClient", return_value=mock_client):
         with patch("app.agent.settings") as mock_settings:
             mock_settings.anthropic_configured = True
@@ -260,7 +262,11 @@ def mock_agent_sdk():
             mock_settings.linear_api_key = ""
             mock_settings.max_budget_per_session_usd = 2.0
             mock_settings.max_turns = 30
+            agent_mod._workers.clear()
+            agent_mod._worker_locks.clear()
             yield {
                 "client": mock_client,
                 "set_messages": set_messages,
             }
+            agent_mod._workers.clear()
+            agent_mod._worker_locks.clear()
