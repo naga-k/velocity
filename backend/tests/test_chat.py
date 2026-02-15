@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.models import ErrorEventData
 
@@ -531,3 +531,372 @@ class TestSaveInsightValidation:
         pattern = r"^[a-zA-Z0-9_-]+$"
         for bad in ["../../etc/evil", "../config", "foo/bar", "a..b/c", "", "a b"]:
             assert not re.match(pattern, bad), f"{bad} should be rejected"
+
+
+class TestClientReuse:
+    """Test that SDK client workers are reused across requests for the same session."""
+
+    async def test_worker_reused_for_same_session(self, client, mock_agent_sdk):
+        """Two requests with the same session_id should reuse one worker."""
+        resp1 = await client.post(
+            "/api/chat",
+            json={"message": "Hello", "session_id": "sess-1"},
+        )
+        assert resp1.status_code == 200
+
+        resp2 = await client.post(
+            "/api/chat",
+            json={"message": "Follow-up", "session_id": "sess-1"},
+        )
+        assert resp2.status_code == 200
+
+        import app.agent as agent_mod
+
+        # One worker created (reused for second request)
+        assert "sess-1" in agent_mod._workers
+        mock_client = mock_agent_sdk["client"]
+        mock_client.connect.assert_called_once()
+        assert mock_client.query.call_count == 2
+
+    async def test_different_sessions_get_different_workers(
+        self, client, mock_agent_sdk
+    ):
+        """Different session_ids should create separate workers."""
+        import app.agent as agent_mod
+
+        # Track how many clients are created
+        clients_created = []
+
+        def make_new_client(*args, **kwargs):
+            m = MagicMock()
+            m.connect = AsyncMock()
+            m.disconnect = AsyncMock()
+            m.query = AsyncMock()
+            from tests.conftest import (
+                _mock_receive_response,
+                make_mock_result_message,
+                make_mock_stream_text_deltas,
+            )
+
+            messages = [
+                *make_mock_stream_text_deltas("Reply"),
+                make_mock_result_message(),
+            ]
+            m.receive_response = MagicMock(
+                side_effect=lambda: _mock_receive_response(messages)
+            )
+            clients_created.append(m)
+            return m
+
+        with patch("app.agent.ClaudeSDKClient", side_effect=make_new_client):
+            resp1 = await client.post(
+                "/api/chat",
+                json={"message": "Hello", "session_id": "sess-a"},
+            )
+            resp2 = await client.post(
+                "/api/chat",
+                json={"message": "Hello", "session_id": "sess-b"},
+            )
+
+        assert resp1.status_code == 200
+        assert resp2.status_code == 200
+        assert len(clients_created) == 2
+        assert "sess-a" in agent_mod._workers
+        assert "sess-b" in agent_mod._workers
+
+    async def test_broken_worker_recreated(self, client, mock_agent_sdk):
+        """If query() fails, the worker is evicted and recreated on retry."""
+        from claude_agent_sdk import ClaudeSDKError
+
+        import app.agent as agent_mod
+
+        # First request succeeds
+        resp1 = await client.post(
+            "/api/chat",
+            json={"message": "Hello", "session_id": "sess-fail"},
+        )
+        assert resp1.status_code == 200
+        assert "sess-fail" in agent_mod._workers
+
+        # Second request: query raises → worker evicted
+        mock_agent_sdk["client"].query = AsyncMock(
+            side_effect=ClaudeSDKError("broken")
+        )
+        resp2 = await client.post(
+            "/api/chat",
+            json={"message": "Retry", "session_id": "sess-fail"},
+        )
+        events = parse_sse_events(resp2.text)
+        assert any(e["event"] == "error" for e in events)
+        assert "sess-fail" not in agent_mod._workers
+
+    async def test_delete_session_disconnects_worker(self, client, mock_agent_sdk):
+        """DELETE /api/sessions/{id} should stop the worker and disconnect."""
+        import app.agent as agent_mod
+        from app import session_store
+
+        session = await session_store.create_session("Test")
+
+        # Send a chat to populate the worker pool
+        await client.post(
+            "/api/chat",
+            json={"message": "Hello", "session_id": session.id},
+        )
+        assert session.id in agent_mod._workers
+
+        # Delete the session
+        resp = await client.delete(f"/api/sessions/{session.id}")
+        assert resp.status_code == 204
+        assert session.id not in agent_mod._workers
+        mock_agent_sdk["client"].disconnect.assert_called_once()
+
+    async def test_disconnect_all_workers(self, client, mock_agent_sdk):
+        """disconnect_all_clients() should stop every worker."""
+        import app.agent as agent_mod
+
+        # Create two workers via chat requests
+        clients_created = []
+
+        def make_client(*args, **kwargs):
+            from tests.conftest import (
+                _mock_receive_response,
+                make_mock_result_message,
+                make_mock_stream_text_deltas,
+            )
+
+            m = MagicMock()
+            m.connect = AsyncMock()
+            m.disconnect = AsyncMock()
+            m.query = AsyncMock()
+            messages = [
+                *make_mock_stream_text_deltas("Reply"),
+                make_mock_result_message(),
+            ]
+            m.receive_response = MagicMock(
+                side_effect=lambda: _mock_receive_response(messages)
+            )
+            clients_created.append(m)
+            return m
+
+        with patch("app.agent.ClaudeSDKClient", side_effect=make_client):
+            await client.post(
+                "/api/chat",
+                json={"message": "Hello", "session_id": "s1"},
+            )
+            await client.post(
+                "/api/chat",
+                json={"message": "Hello", "session_id": "s2"},
+            )
+
+            assert len(agent_mod._workers) == 2
+            await agent_mod.disconnect_all_clients()
+
+        assert len(agent_mod._workers) == 0
+        for m in clients_created:
+            m.disconnect.assert_called_once()
+
+    async def test_connect_failure_not_cached(self, client, mock_agent_sdk):
+        """If connect() fails, worker should NOT be stored in _workers."""
+        import app.agent as agent_mod
+
+        mock_agent_sdk["client"].connect = AsyncMock(
+            side_effect=RuntimeError("connect failed")
+        )
+
+        resp = await client.post(
+            "/api/chat",
+            json={"message": "Hello", "session_id": "sess-broken"},
+        )
+        events = parse_sse_events(resp.text)
+        assert any(e["event"] == "error" for e in events)
+        assert "sess-broken" not in agent_mod._workers
+
+
+class TestMultiTurnConversation:
+    """End-to-end tests simulating real multi-message conversations.
+
+    These ensure session-scoped worker reuse works correctly across
+    multiple sequential messages, error recovery, and session lifecycle.
+    """
+
+    async def test_three_message_conversation(self, client, mock_agent_sdk):
+        """Simulate a 3-turn conversation — worker created once, queried 3x."""
+        import app.agent as agent_mod
+
+        session_id = "conv-3turn"
+
+        for i, msg in enumerate(["Hello", "Follow-up", "One more"], 1):
+            resp = await client.post(
+                "/api/chat",
+                json={"message": msg, "session_id": session_id},
+            )
+            assert resp.status_code == 200
+            events = parse_sse_events(resp.text)
+            assert events[-1]["event"] == "done"
+
+        # Single worker, connected once, queried 3 times
+        assert session_id in agent_mod._workers
+        mock_client = mock_agent_sdk["client"]
+        mock_client.connect.assert_called_once()
+        assert mock_client.query.call_count == 3
+
+        # Verify session_id passed to each query() call
+        for call in mock_client.query.call_args_list:
+            assert call.kwargs.get("session_id") == session_id or call.args == (
+                mock_client.query.call_args_list[0].args
+            )
+
+    async def test_interleaved_sessions(self, client, mock_agent_sdk):
+        """Messages to different sessions should not interfere."""
+        import app.agent as agent_mod
+
+        clients_created = []
+
+        def make_client(*args, **kwargs):
+            from tests.conftest import (
+                _mock_receive_response,
+                make_mock_result_message,
+                make_mock_stream_text_deltas,
+            )
+
+            m = MagicMock()
+            m.connect = AsyncMock()
+            m.disconnect = AsyncMock()
+            m.query = AsyncMock()
+            messages = [
+                *make_mock_stream_text_deltas("Reply"),
+                make_mock_result_message(),
+            ]
+            m.receive_response = MagicMock(
+                side_effect=lambda: _mock_receive_response(messages)
+            )
+            clients_created.append(m)
+            return m
+
+        with patch("app.agent.ClaudeSDKClient", side_effect=make_client):
+            # Interleave messages between two sessions
+            await client.post(
+                "/api/chat",
+                json={"message": "A1", "session_id": "session-A"},
+            )
+            await client.post(
+                "/api/chat",
+                json={"message": "B1", "session_id": "session-B"},
+            )
+            await client.post(
+                "/api/chat",
+                json={"message": "A2", "session_id": "session-A"},
+            )
+            await client.post(
+                "/api/chat",
+                json={"message": "B2", "session_id": "session-B"},
+            )
+
+        # Two workers created (one per session)
+        assert "session-A" in agent_mod._workers
+        assert "session-B" in agent_mod._workers
+        assert len(clients_created) == 2
+        # Each client queried twice
+        assert clients_created[0].query.call_count == 2
+        assert clients_created[1].query.call_count == 2
+
+    async def test_error_midconversation_recovers(self, client, mock_agent_sdk):
+        """Error on turn 2 evicts worker; turn 3 gets a fresh one."""
+        from claude_agent_sdk import ClaudeSDKError
+
+        import app.agent as agent_mod
+
+        session_id = "conv-error-recovery"
+
+        # Turn 1: success
+        resp1 = await client.post(
+            "/api/chat",
+            json={"message": "Turn 1", "session_id": session_id},
+        )
+        assert resp1.status_code == 200
+        assert session_id in agent_mod._workers
+
+        # Turn 2: error → evicts worker
+        mock_agent_sdk["client"].query = AsyncMock(
+            side_effect=ClaudeSDKError("temporary failure")
+        )
+        resp2 = await client.post(
+            "/api/chat",
+            json={"message": "Turn 2", "session_id": session_id},
+        )
+        events2 = parse_sse_events(resp2.text)
+        assert any(e["event"] == "error" for e in events2)
+        assert session_id not in agent_mod._workers
+
+        # Turn 3: restore query, should create new worker
+        from tests.conftest import (
+            _mock_receive_response,
+            make_mock_result_message,
+            make_mock_stream_text_deltas,
+        )
+
+        mock_agent_sdk["client"].query = AsyncMock()
+        messages = [
+            *make_mock_stream_text_deltas("Recovered!"),
+            make_mock_result_message(),
+        ]
+        mock_agent_sdk["client"].receive_response = MagicMock(
+            side_effect=lambda: _mock_receive_response(messages)
+        )
+
+        resp3 = await client.post(
+            "/api/chat",
+            json={"message": "Turn 3", "session_id": session_id},
+        )
+        events3 = parse_sse_events(resp3.text)
+        text_events = [e for e in events3 if e["event"] == "text"]
+        full_text = "".join(json.loads(e["data"]) for e in text_events)
+        assert "Recovered" in full_text
+        assert session_id in agent_mod._workers
+
+    async def test_session_create_chat_delete_lifecycle(self, client, mock_agent_sdk):
+        """Full lifecycle: create session → send messages → delete session."""
+        import app.agent as agent_mod
+        from app import session_store
+
+        # Create session
+        session = await session_store.create_session("Lifecycle test")
+
+        # Send 2 messages
+        for msg in ["Hello", "World"]:
+            resp = await client.post(
+                "/api/chat",
+                json={"message": msg, "session_id": session.id},
+            )
+            assert resp.status_code == 200
+
+        assert session.id in agent_mod._workers
+        mock_client = mock_agent_sdk["client"]
+        assert mock_client.query.call_count == 2
+
+        # Delete session
+        resp = await client.delete(f"/api/sessions/{session.id}")
+        assert resp.status_code == 204
+        assert session.id not in agent_mod._workers
+        mock_client.disconnect.assert_called_once()
+
+        # Verify session is gone from DB
+        fetched = await session_store.get_session(session.id)
+        assert fetched is None
+
+    async def test_many_sequential_messages(self, client, mock_agent_sdk):
+        """Simulate 10 messages in a row — worker stays alive the whole time."""
+        session_id = "conv-10msg"
+
+        for i in range(10):
+            resp = await client.post(
+                "/api/chat",
+                json={"message": f"Message {i}", "session_id": session_id},
+            )
+            assert resp.status_code == 200
+            events = parse_sse_events(resp.text)
+            assert events[-1]["event"] == "done"
+
+        mock_client = mock_agent_sdk["client"]
+        mock_client.connect.assert_called_once()
+        assert mock_client.query.call_count == 10

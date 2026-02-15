@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.agent import disconnect_all_clients
 from app.config import settings
 from app.database import init_db
 from app.redis_client import connect_redis, disconnect_redis
@@ -13,10 +14,11 @@ from app.routes import chat, health, sessions
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: init DB + Redis. Shutdown: disconnect Redis."""
+    """Startup: init DB + Redis. Shutdown: disconnect clients + Redis."""
     await init_db()
     await connect_redis()
     yield
+    await disconnect_all_clients()
     await disconnect_redis()
 
 
