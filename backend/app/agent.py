@@ -381,15 +381,18 @@ def _build_mcp_servers() -> dict:
     if settings.slack_configured:
         servers["slack"] = {
             "command": "npx",
-            "args": ["@anthropic/slack-mcp"],
-            "env": {"SLACK_BOT_TOKEN": settings.slack_bot_token},
+            "args": ["-y", "@modelcontextprotocol/server-slack"],
+            "env": {
+                "SLACK_BOT_TOKEN": settings.slack_bot_token,
+                "SLACK_TEAM_ID": settings.slack_team_id,
+            },
         }
 
     if settings.linear_configured:
         servers["linear"] = {
             "command": "npx",
-            "args": ["@anthropic/linear-mcp"],
-            "env": {"LINEAR_API_KEY": settings.linear_api_key},
+            "args": ["-y", "linear-mcp"],
+            "env": {"LINEAR_ACCESS_TOKEN": settings.linear_api_key},
         }
 
     return servers
