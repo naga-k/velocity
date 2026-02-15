@@ -3,7 +3,7 @@
 from fastapi import APIRouter
 from sse_starlette.sse import EventSourceResponse
 
-from app.agent import generate_response
+from app.agents import generate_response
 from app.models import ChatRequest
 from app.sse_bridge import stream_sse_events
 

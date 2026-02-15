@@ -119,7 +119,9 @@ class TestChatEndpoint:
         assert resp.status_code == 422
 
     async def test_chat_error_when_no_api_key(self, client):
-        with patch("app.agent.settings") as mock_settings:
+        # Patch settings where it's used in generate_response
+        import app.agents as agents_mod
+        with patch.object(agents_mod, "settings") as mock_settings:
             mock_settings.anthropic_configured = False
 
             resp = await client.post(
@@ -550,10 +552,10 @@ class TestClientReuse:
         )
         assert resp2.status_code == 200
 
-        import app.agent as agent_mod
+        import app.agents.session_worker as worker_mod
 
         # One worker created (reused for second request)
-        assert "sess-1" in agent_mod._workers
+        assert "sess-1" in worker_mod._workers
         mock_client = mock_agent_sdk["client"]
         mock_client.connect.assert_called_once()
         assert mock_client.query.call_count == 2
@@ -562,7 +564,7 @@ class TestClientReuse:
         self, client, mock_agent_sdk
     ):
         """Different session_ids should create separate workers."""
-        import app.agent as agent_mod
+        import app.agents.session_worker as worker_mod
 
         # Track how many clients are created
         clients_created = []
@@ -588,7 +590,7 @@ class TestClientReuse:
             clients_created.append(m)
             return m
 
-        with patch("app.agent.ClaudeSDKClient", side_effect=make_new_client):
+        with patch("app.agents.session_worker.ClaudeSDKClient", side_effect=make_new_client):
             resp1 = await client.post(
                 "/api/chat",
                 json={"message": "Hello", "session_id": "sess-a"},
@@ -601,14 +603,14 @@ class TestClientReuse:
         assert resp1.status_code == 200
         assert resp2.status_code == 200
         assert len(clients_created) == 2
-        assert "sess-a" in agent_mod._workers
-        assert "sess-b" in agent_mod._workers
+        assert "sess-a" in worker_mod._workers
+        assert "sess-b" in worker_mod._workers
 
     async def test_broken_worker_recreated(self, client, mock_agent_sdk):
         """If query() fails, the worker is evicted and recreated on retry."""
         from claude_agent_sdk import ClaudeSDKError
 
-        import app.agent as agent_mod
+        import app.agents.session_worker as worker_mod
 
         # First request succeeds
         resp1 = await client.post(
@@ -616,7 +618,7 @@ class TestClientReuse:
             json={"message": "Hello", "session_id": "sess-fail"},
         )
         assert resp1.status_code == 200
-        assert "sess-fail" in agent_mod._workers
+        assert "sess-fail" in worker_mod._workers
 
         # Second request: query raises → worker evicted
         mock_agent_sdk["client"].query = AsyncMock(
@@ -628,11 +630,11 @@ class TestClientReuse:
         )
         events = parse_sse_events(resp2.text)
         assert any(e["event"] == "error" for e in events)
-        assert "sess-fail" not in agent_mod._workers
+        assert "sess-fail" not in worker_mod._workers
 
     async def test_delete_session_disconnects_worker(self, client, mock_agent_sdk):
         """DELETE /api/sessions/{id} should stop the worker and disconnect."""
-        import app.agent as agent_mod
+        import app.agents.session_worker as worker_mod
         from app import session_store
 
         session = await session_store.create_session("Test")
@@ -642,17 +644,17 @@ class TestClientReuse:
             "/api/chat",
             json={"message": "Hello", "session_id": session.id},
         )
-        assert session.id in agent_mod._workers
+        assert session.id in worker_mod._workers
 
         # Delete the session
         resp = await client.delete(f"/api/sessions/{session.id}")
         assert resp.status_code == 204
-        assert session.id not in agent_mod._workers
+        assert session.id not in worker_mod._workers
         mock_agent_sdk["client"].disconnect.assert_called_once()
 
     async def test_disconnect_all_workers(self, client, mock_agent_sdk):
         """disconnect_all_clients() should stop every worker."""
-        import app.agent as agent_mod
+        import app.agents.session_worker as worker_mod
 
         # Create two workers via chat requests
         clients_created = []
@@ -678,7 +680,7 @@ class TestClientReuse:
             clients_created.append(m)
             return m
 
-        with patch("app.agent.ClaudeSDKClient", side_effect=make_client):
+        with patch("app.agents.session_worker.ClaudeSDKClient", side_effect=make_client):
             await client.post(
                 "/api/chat",
                 json={"message": "Hello", "session_id": "s1"},
@@ -688,16 +690,17 @@ class TestClientReuse:
                 json={"message": "Hello", "session_id": "s2"},
             )
 
-            assert len(agent_mod._workers) == 2
-            await agent_mod.disconnect_all_clients()
+            assert len(worker_mod._workers) == 2
+            from app.agents import disconnect_all_clients
+            await disconnect_all_clients()
 
-        assert len(agent_mod._workers) == 0
+        assert len(worker_mod._workers) == 0
         for m in clients_created:
             m.disconnect.assert_called_once()
 
     async def test_connect_failure_not_cached(self, client, mock_agent_sdk):
         """If connect() fails, worker should NOT be stored in _workers."""
-        import app.agent as agent_mod
+        import app.agents.session_worker as worker_mod
 
         mock_agent_sdk["client"].connect = AsyncMock(
             side_effect=RuntimeError("connect failed")
@@ -709,7 +712,7 @@ class TestClientReuse:
         )
         events = parse_sse_events(resp.text)
         assert any(e["event"] == "error" for e in events)
-        assert "sess-broken" not in agent_mod._workers
+        assert "sess-broken" not in worker_mod._workers
 
 
 class TestMultiTurnConversation:
@@ -721,7 +724,7 @@ class TestMultiTurnConversation:
 
     async def test_three_message_conversation(self, client, mock_agent_sdk):
         """Simulate a 3-turn conversation — worker created once, queried 3x."""
-        import app.agent as agent_mod
+        import app.agents.session_worker as worker_mod
 
         session_id = "conv-3turn"
 
@@ -735,7 +738,7 @@ class TestMultiTurnConversation:
             assert events[-1]["event"] == "done"
 
         # Single worker, connected once, queried 3 times
-        assert session_id in agent_mod._workers
+        assert session_id in worker_mod._workers
         mock_client = mock_agent_sdk["client"]
         mock_client.connect.assert_called_once()
         assert mock_client.query.call_count == 3
@@ -748,7 +751,7 @@ class TestMultiTurnConversation:
 
     async def test_interleaved_sessions(self, client, mock_agent_sdk):
         """Messages to different sessions should not interfere."""
-        import app.agent as agent_mod
+        import app.agents.session_worker as worker_mod
 
         clients_created = []
 
@@ -773,7 +776,7 @@ class TestMultiTurnConversation:
             clients_created.append(m)
             return m
 
-        with patch("app.agent.ClaudeSDKClient", side_effect=make_client):
+        with patch("app.agents.session_worker.ClaudeSDKClient", side_effect=make_client):
             # Interleave messages between two sessions
             await client.post(
                 "/api/chat",
@@ -793,8 +796,8 @@ class TestMultiTurnConversation:
             )
 
         # Two workers created (one per session)
-        assert "session-A" in agent_mod._workers
-        assert "session-B" in agent_mod._workers
+        assert "session-A" in worker_mod._workers
+        assert "session-B" in worker_mod._workers
         assert len(clients_created) == 2
         # Each client queried twice
         assert clients_created[0].query.call_count == 2
@@ -804,7 +807,7 @@ class TestMultiTurnConversation:
         """Error on turn 2 evicts worker; turn 3 gets a fresh one."""
         from claude_agent_sdk import ClaudeSDKError
 
-        import app.agent as agent_mod
+        import app.agents.session_worker as worker_mod
 
         session_id = "conv-error-recovery"
 
@@ -814,7 +817,7 @@ class TestMultiTurnConversation:
             json={"message": "Turn 1", "session_id": session_id},
         )
         assert resp1.status_code == 200
-        assert session_id in agent_mod._workers
+        assert session_id in worker_mod._workers
 
         # Turn 2: error → evicts worker
         mock_agent_sdk["client"].query = AsyncMock(
@@ -826,7 +829,7 @@ class TestMultiTurnConversation:
         )
         events2 = parse_sse_events(resp2.text)
         assert any(e["event"] == "error" for e in events2)
-        assert session_id not in agent_mod._workers
+        assert session_id not in worker_mod._workers
 
         # Turn 3: restore query, should create new worker
         from tests.conftest import (
@@ -852,11 +855,11 @@ class TestMultiTurnConversation:
         text_events = [e for e in events3 if e["event"] == "text"]
         full_text = "".join(json.loads(e["data"]) for e in text_events)
         assert "Recovered" in full_text
-        assert session_id in agent_mod._workers
+        assert session_id in worker_mod._workers
 
     async def test_session_create_chat_delete_lifecycle(self, client, mock_agent_sdk):
         """Full lifecycle: create session → send messages → delete session."""
-        import app.agent as agent_mod
+        import app.agents.session_worker as worker_mod
         from app import session_store
 
         # Create session
@@ -870,14 +873,14 @@ class TestMultiTurnConversation:
             )
             assert resp.status_code == 200
 
-        assert session.id in agent_mod._workers
+        assert session.id in worker_mod._workers
         mock_client = mock_agent_sdk["client"]
         assert mock_client.query.call_count == 2
 
         # Delete session
         resp = await client.delete(f"/api/sessions/{session.id}")
         assert resp.status_code == 204
-        assert session.id not in agent_mod._workers
+        assert session.id not in worker_mod._workers
         mock_client.disconnect.assert_called_once()
 
         # Verify session is gone from DB
