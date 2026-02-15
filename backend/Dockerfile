@@ -3,6 +3,9 @@ FROM python:3.12-slim
 WORKDIR /app
 # Railway deployment
 
+# Create non-root user for Claude Code CLI
+RUN useradd -m -u 1000 appuser
+
 # Install git (needed for SDK fork dependency), Node.js (for claude-code CLI), and clean up
 RUN apt-get update && \
     apt-get install -y git curl && \
@@ -30,6 +33,10 @@ RUN chmod +x /entrypoint.sh
 
 # Set memory path to persistent volume
 ENV MEMORY_PATH=/app/data/memory
+
+# Create data directory and set permissions
+RUN mkdir -p /app/data && chown -R appuser:appuser /app
+USER appuser
 
 EXPOSE 8000
 
