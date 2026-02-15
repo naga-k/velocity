@@ -15,6 +15,14 @@ RUN uv sync --frozen --no-dev
 COPY app/ app/
 COPY memory/ memory/
 
+# Copy entrypoint script
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Set memory path to persistent volume
+ENV MEMORY_PATH=/app/data/memory
+
 EXPOSE 8000
 
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

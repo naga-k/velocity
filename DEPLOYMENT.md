@@ -28,11 +28,8 @@ Quick deployment guide for the hackathon. Choose your preferred platform.
 2. **Add Disk for Persistent Storage**
    - In service settings → "Disks"
    - Click "Add Disk"
-   - **Mount Path**: `/app/data` (for SQLite)
+   - **Mount Path**: `/app/data` (for SQLite + agent memory)
    - **Size**: 1 GB (free tier)
-   - Add another disk:
-     - **Mount Path**: `/app/memory` (for agent memory files)
-     - **Size**: 1 GB
 
 3. **Environment Variables**
    ```
@@ -98,9 +95,7 @@ Quick deployment guide for the hackathon. Choose your preferred platform.
    - Add volume:
      - **Mount Path**: `/app/data`
      - **Size**: 1 GB
-   - Add another:
-     - **Mount Path**: `/app/memory`
-     - **Size**: 1 GB
+   - This single volume stores both SQLite database and agent memory files
 
 4. **Environment Variables** (same as Render above)
 
@@ -157,15 +152,11 @@ Quick deployment guide for the hackathon. Choose your preferred platform.
    [mounts]
      source = "velocity_data"
      destination = "/app/data"
-
-     source = "velocity_memory"
-     destination = "/app/memory"
    ```
 
-3. **Create Volumes**
+3. **Create Volume**
    ```bash
    fly volumes create velocity_data --size 1
-   fly volumes create velocity_memory --size 1
    ```
 
 4. **Set Secrets**

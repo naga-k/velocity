@@ -6,6 +6,7 @@ These tools are available to the orchestrator and doc-writer agent.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -13,8 +14,8 @@ from claude_agent_sdk import tool
 
 logger = logging.getLogger(__name__)
 
-# Memory directory
-MEMORY_DIR = Path(__file__).resolve().parent.parent.parent / "memory"
+# Memory directory - use env var in production, fallback to local in dev
+MEMORY_DIR = Path(os.getenv("MEMORY_PATH", str(Path(__file__).resolve().parent.parent.parent / "memory")))
 
 
 @tool(
