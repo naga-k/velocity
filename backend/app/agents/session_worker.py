@@ -228,10 +228,18 @@ class _SessionWorker:
                 await out_q.put(e)
 
         # Execute command with streaming
+        stderr_lines = []
+
+        async def on_stderr(line: str):
+            """Capture stderr for error reporting."""
+            stderr_lines.append(line)
+            logger.error(f"Sandbox stderr: {line}")
+
         result = await sandbox_manager.execute_streaming(
             session_id=self.session_id,
             command=command,
             on_stdout=on_stdout,
+            on_stderr=on_stderr,
             timeout=600,  # 10 minutes
         )
 
@@ -239,7 +247,8 @@ class _SessionWorker:
             raise RuntimeError(f"Sandbox execution failed: {result['error']}")
 
         if result["exit_code"] != 0:
-            raise RuntimeError(f"Sandbox script exited with code {result['exit_code']}")
+            stderr_msg = "\n".join(stderr_lines) if stderr_lines else "No stderr output"
+            raise RuntimeError(f"Sandbox script exited with code {result['exit_code']}. Stderr: {stderr_msg}")
 
     async def query_and_stream(
         self, message: str, session_id: str

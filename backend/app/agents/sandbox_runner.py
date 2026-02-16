@@ -28,14 +28,13 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     ClaudeSDKClient,
     ResultMessage,
-    StreamEvent,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
     create_sdk_mcp_server,
     tool,
 )
-from claude_agent_sdk.types import ThinkingConfigAdaptive
+from claude_agent_sdk.types import StreamEvent, ThinkingConfigAdaptive
 
 # Configure logging to stderr (stdout is for JSON events)
 logging.basicConfig(
