@@ -490,6 +490,204 @@ async def update_linear_issue(args: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Slack Tools (Custom HTTP — replaces unreliable MCP stdio in sandbox)
+# ---------------------------------------------------------------------------
+
+
+def _slack_proxy_call(method: str, params: dict, timeout: int = 30) -> dict:
+    """Make a Slack API call via the backend proxy.
+
+    Daytona Tier 1/2 sandboxes can't reach slack.com directly (network restrictions).
+    This function emits a proxy request to stdout, which the backend intercepts,
+    makes the actual Slack API call, and writes the response to a file in the sandbox.
+    """
+    import os
+    import time
+    import uuid as _uuid
+
+    req_id = _uuid.uuid4().hex[:12]
+
+    # Emit proxy request to stdout — the backend session_worker intercepts this
+    proxy_event = json.dumps({
+        "type": "slack_proxy",
+        "id": req_id,
+        "method": method,
+        "params": params,
+    })
+    print(proxy_event, flush=True)
+
+    # Poll for response file (backend writes it via Daytona filesystem API)
+    resp_path = f"/tmp/slack_resp_{req_id}.json"
+    start = time.time()
+    while time.time() - start < timeout:
+        if os.path.exists(resp_path):
+            try:
+                with open(resp_path) as f:
+                    data = json.load(f)
+                os.remove(resp_path)
+                return data
+            except (json.JSONDecodeError, OSError):
+                pass  # File might be partially written, retry
+        time.sleep(0.3)
+
+    return {"ok": False, "error": "proxy_timeout", "detail": "Backend did not respond in time"}
+
+
+@tool(
+    "slack_search_messages",
+    "Search Slack messages by keyword. Returns messages with channel, author, timestamp.",
+    {
+        "query": str,  # Search keywords
+        "limit": int,  # Max results (default 20)
+    },
+)
+async def slack_search_messages(args: dict) -> dict:
+    """Search Slack messages via backend proxy."""
+    import asyncio
+
+    query = args.get("query", "")
+    if not query:
+        return {"content": [{"type": "text", "text": "query is required"}]}
+
+    limit = args.get("limit", 20)
+
+    try:
+        data = await asyncio.to_thread(
+            _slack_proxy_call, "search.messages", {"query": query, "limit": limit}
+        )
+
+        if not data.get("ok"):
+            error = data.get("error", "Unknown error")
+            if error in ("missing_scope", "not_allowed_token_type"):
+                return {"content": [{"type": "text", "text": "search.messages requires a User token (xoxp-). Use slack_list_channels + slack_get_channel_history instead."}]}
+            return {"content": [{"type": "text", "text": f"Slack API error: {error}"}]}
+
+        matches = data.get("messages", {}).get("matches", [])
+        if not matches:
+            return {"content": [{"type": "text", "text": f"No Slack messages found for '{query}'"}]}
+
+        lines = [f"# Slack Search: '{query}' ({len(matches)} results)\n"]
+        for msg in matches[:limit]:
+            user = msg.get("username", msg.get("user", "unknown"))
+            channel_name = msg.get("channel", {}).get("name", "unknown")
+            text = msg.get("text", "")[:300]
+            permalink = msg.get("permalink", "")
+            lines.append(f"**#{channel_name}** — @{user}")
+            lines.append(f"> {text}")
+            if permalink:
+                lines.append(f"[Link]({permalink})")
+            lines.append("")
+
+        return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+
+    except Exception as e:
+        logger.exception("Error in slack_search_messages")
+        return {"content": [{"type": "text", "text": f"Error: {type(e).__name__}: {str(e)}"}]}
+
+
+@tool(
+    "slack_list_channels",
+    "List Slack channels the bot has access to",
+    {
+        "limit": int,  # Max channels to return (default 50)
+    },
+)
+async def slack_list_channels(args: dict) -> dict:
+    """List Slack channels via backend proxy."""
+    import asyncio
+
+    limit = args.get("limit", 50)
+
+    try:
+        data = await asyncio.to_thread(
+            _slack_proxy_call, "conversations.list", {"limit": limit}
+        )
+
+        if not data.get("ok"):
+            return {"content": [{"type": "text", "text": f"Slack API error: {data.get('error', 'Unknown')}"}]}
+
+        channels = data.get("channels", [])
+        if not channels:
+            return {"content": [{"type": "text", "text": "No channels found"}]}
+
+        lines = ["# Slack Channels\n"]
+        for ch in channels:
+            name = ch.get("name", "unknown")
+            purpose = ch.get("purpose", {}).get("value", "")[:100]
+            member_count = ch.get("num_members", 0)
+            lines.append(f"- **#{name}** ({member_count} members) — {purpose}")
+
+        return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+
+    except Exception as e:
+        logger.exception("Error in slack_list_channels")
+        return {"content": [{"type": "text", "text": f"Error: {type(e).__name__}: {str(e)}"}]}
+
+
+@tool(
+    "slack_get_channel_history",
+    "Get recent messages from a Slack channel",
+    {
+        "channel_name": str,  # Channel name (without #)
+        "limit": int,  # Max messages (default 20)
+    },
+)
+async def slack_get_channel_history(args: dict) -> dict:
+    """Get channel history via backend proxy."""
+    import asyncio
+
+    channel_name = args.get("channel_name", "")
+    if not channel_name:
+        return {"content": [{"type": "text", "text": "channel_name is required"}]}
+
+    limit = args.get("limit", 20)
+
+    try:
+        # Step 1: Get channel list to find channel ID
+        channels_data = await asyncio.to_thread(
+            _slack_proxy_call, "conversations.list", {"limit": 200}
+        )
+
+        if not channels_data.get("ok"):
+            return {"content": [{"type": "text", "text": f"Slack API error: {channels_data.get('error', 'Unknown')}"}]}
+
+        channel_id = None
+        for ch in channels_data.get("channels", []):
+            if ch.get("name", "").lower() == channel_name.lower().lstrip("#"):
+                channel_id = ch["id"]
+                break
+
+        if not channel_id:
+            available = ", ".join(ch["name"] for ch in channels_data.get("channels", [])[:20])
+            return {"content": [{"type": "text", "text": f"Channel '{channel_name}' not found. Available: {available}"}]}
+
+        # Step 2: Get channel history
+        history_data = await asyncio.to_thread(
+            _slack_proxy_call, "conversations.history", {"channel": channel_id, "limit": limit}
+        )
+
+        if not history_data.get("ok"):
+            return {"content": [{"type": "text", "text": f"Slack API error: {history_data.get('error', 'Unknown')}"}]}
+
+        messages = history_data.get("messages", [])
+        if not messages:
+            return {"content": [{"type": "text", "text": f"No messages in #{channel_name}"}]}
+
+        lines = [f"# #{channel_name} — Recent Messages ({len(messages)})\n"]
+        for msg in reversed(messages):  # Chronological order
+            user = msg.get("user", "bot")
+            text = msg.get("text", "")[:300]
+            lines.append(f"**@{user}**: {text}")
+            lines.append("")
+
+        return {"content": [{"type": "text", "text": "\n".join(lines)}]}
+
+    except Exception as e:
+        logger.exception("Error in slack_get_channel_history")
+        return {"content": [{"type": "text", "text": f"Error: {type(e).__name__}: {str(e)}"}]}
+
+
+# ---------------------------------------------------------------------------
 # Agent Definitions (Copy from definitions.py)
 # ---------------------------------------------------------------------------
 # TODO: Update this file with all 22 new tools from tools/ directory:
@@ -502,9 +700,9 @@ async def update_linear_issue(args: dict) -> dict:
 
 AGENT_TOOLS = {
     "research": [
-        "mcp__slack__message_search",
-        "mcp__slack__get_channel",
-        "mcp__slack__get_thread",
+        "mcp__pm_tools__slack_search_messages",
+        "mcp__pm_tools__slack_list_channels",
+        "mcp__pm_tools__slack_get_channel_history",
         "WebSearch",
         "WebFetch",
         "Read",
@@ -527,7 +725,8 @@ AGENT_TOOLS = {
         "mcp__pm_tools__list_linear_issues",
         "mcp__pm_tools__create_linear_issue",
         "mcp__pm_tools__update_linear_issue",
-        "mcp__slack__message_search",
+        "mcp__pm_tools__slack_search_messages",
+        "mcp__pm_tools__slack_get_channel_history",
         "WebSearch",
         "WebFetch",
         "Read",
@@ -621,10 +820,30 @@ when possible. Always ground your responses in real data from integrations.
 Cite sources. Be concise, actionable, and opinionated — but transparent about
 uncertainty.
 
-You also have PM memory tools:
-- **read_product_context**: Load the current product overview and accumulated
-  knowledge.
-- **save_insight**: Persist a new product insight for future sessions.
+## Available Tools
+
+**Linear tools** (via pm_tools):
+- list_linear_issues — list issues with optional filtering
+- create_linear_issue — create a new issue
+- update_linear_issue — update status, title, description, priority (supports state_name like "Done", "In Progress")
+
+**Slack tools** (via pm_tools — direct Slack Web API):
+- slack_search_messages — search messages by keyword
+- slack_list_channels — list channels the bot can access
+- slack_get_channel_history — get recent messages from a channel
+
+**Slack bot scopes (what we have access to):**
+channels:history, channels:join, channels:manage, channels:read, chat:write,
+reactions:read, reactions:write, users.profile:read, users:read
+
+IMPORTANT: We do NOT have search:read (requires a User token, not bot token).
+slack_search_messages will fail — use slack_list_channels to find channels,
+then slack_get_channel_history to read them. If the user needs full search,
+tell them to add a User token with search:read scope.
+
+**PM memory tools:**
+- read_product_context — load product overview and accumulated knowledge
+- save_insight — persist a product insight for future sessions
 """
 
 # ---------------------------------------------------------------------------
@@ -657,20 +876,16 @@ async def run_agent(
                 list_linear_issues,
                 create_linear_issue,
                 update_linear_issue,
+                slack_search_messages,
+                slack_list_channels,
+                slack_get_channel_history,
             ],
         )
 
         mcp_servers: dict = {"pm_tools": pm_tools_server}
 
-        if slack_token:
-            mcp_servers["slack"] = {
-                "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-slack"],
-                "env": {
-                    "SLACK_BOT_TOKEN": slack_token,
-                    "SLACK_TEAM_ID": config.get("slack_team_id", ""),
-                },
-            }
+        # Slack tools are custom HTTP (registered in pm_tools above)
+        # No MCP stdio server needed — direct Slack Web API calls are more reliable in sandbox
 
         # Build enhanced system prompt with conversation history
         system_prompt = SYSTEM_PROMPT

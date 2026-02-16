@@ -5,8 +5,10 @@ running the SDK locally. Each session gets an ephemeral Daytona sandbox where
 the sandbox_runner.py script is uploaded and executed. The worker streams
 stdout from the sandbox and parses JSON events into SDK-like message objects.
 
-The query_and_stream() interface is preserved exactly so generate_response()
-in __init__.py sees no difference.
+Slack API calls are proxied through the backend because Daytona Tier 1/2
+sandboxes have restricted network access (slack.com is not whitelisted).
+The sandbox tools write request files, the backend fulfills them via the
+Daytona filesystem API, and the tools poll for response files.
 """
 
 from __future__ import annotations
@@ -16,6 +18,8 @@ import json
 import logging
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from claude_agent_sdk import AssistantMessage, ResultMessage, ToolUseBlock
 from claude_agent_sdk.types import StreamEvent
@@ -31,14 +35,68 @@ _SENTINEL = object()  # Marks end of a response stream
 SANDBOX_RUNNER_SCRIPT = (Path(__file__).parent / "sandbox_runner.py").read_text()
 
 
-class _SessionWorker:
-    """Manages a Daytona sandbox for SDK execution.
+async def _handle_slack_proxy(session_id: str, request: dict) -> None:
+    """Handle a Slack proxy request from the sandbox.
 
-    The background task creates a sandbox, uploads sandbox_runner.py, then
-    loops: receive a query from the input queue, execute the script in the
-    sandbox with streaming, parse JSON lines from stdout, push SDK message
-    objects to the output queue, push a sentinel when done.
+    The sandbox can't reach slack.com (Daytona Tier 1/2 network restrictions),
+    so we make the API call from the backend and write the response back.
     """
+    req_id = request.get("id", "")
+    method = request.get("method", "")
+    params = request.get("params", {})
+
+    if not settings.slack_configured:
+        response = {"ok": False, "error": "slack_not_configured"}
+        await sandbox_manager.write_file(
+            session_id, json.dumps(response), f"/tmp/slack_resp_{req_id}.json"
+        )
+        return
+
+    headers = {"Authorization": f"Bearer {settings.slack_bot_token}"}
+    base = "https://slack.com/api"
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            if method == "conversations.list":
+                resp = await client.get(
+                    f"{base}/conversations.list",
+                    params={"limit": params.get("limit", 50), "types": "public_channel"},
+                    headers=headers,
+                )
+                data = resp.json()
+            elif method == "conversations.history":
+                resp = await client.get(
+                    f"{base}/conversations.history",
+                    params={"channel": params.get("channel"), "limit": params.get("limit", 20)},
+                    headers=headers,
+                )
+                data = resp.json()
+            elif method == "search.messages":
+                resp = await client.get(
+                    f"{base}/search.messages",
+                    params={"query": params.get("query", ""), "count": params.get("limit", 20), "sort": "timestamp"},
+                    headers=headers,
+                )
+                data = resp.json()
+            else:
+                data = {"ok": False, "error": f"unknown_method: {method}"}
+
+    except Exception as e:
+        logger.error(f"Slack proxy error for {method}: {e}")
+        data = {"ok": False, "error": str(e)}
+
+    # Write response back to sandbox filesystem
+    ok = await sandbox_manager.write_file(
+        session_id, json.dumps(data), f"/tmp/slack_resp_{req_id}.json"
+    )
+    if ok:
+        logger.info(f"Slack proxy: {method} -> wrote response for {req_id}")
+    else:
+        logger.error(f"Slack proxy: failed to write response for {req_id}")
+
+
+class _SessionWorker:
+    """Manages a Daytona sandbox for SDK execution."""
 
     def __init__(self, session_id: str):
         self.session_id = session_id
@@ -47,14 +105,13 @@ class _SessionWorker:
         self._started = asyncio.Event()
         self._connect_error: Exception | None = None
         self._sandbox_created = False
-        self._conversation_history: list[dict[str, str]] = []  # Store conversation turns
+        self._conversation_history: list[dict[str, str]] = []
 
     async def start(self) -> None:
         """Launch the background worker task."""
         self._task = asyncio.create_task(
             self._run(), name=f"session-worker-sandbox-{self.session_id}"
         )
-        # Wait until the worker signals sandbox is ready (or failed)
         await self._started.wait()
         if self._connect_error is not None:
             raise self._connect_error
@@ -62,7 +119,6 @@ class _SessionWorker:
     async def _run(self) -> None:
         """Background loop: create sandbox, upload script, then serve queries."""
         try:
-            # Create Daytona sandbox
             logger.info(f"Creating Daytona sandbox for session {self.session_id}")
             sandbox = await sandbox_manager.create_sandbox(self.session_id)
             if not sandbox:
@@ -70,7 +126,6 @@ class _SessionWorker:
 
             self._sandbox_created = True
 
-            # Upload sandbox_runner.py
             logger.info(f"Uploading sandbox_runner.py to sandbox {self.session_id}")
             upload_ok = await sandbox_manager.upload_script(
                 self.session_id,
@@ -80,13 +135,12 @@ class _SessionWorker:
             if not upload_ok:
                 raise RuntimeError("Failed to upload sandbox runner script")
 
-            self._started.set()  # Signal that we're ready to serve queries
+            self._started.set()
 
-            # Query loop
             while True:
                 item = await self._input.get()
                 if item is None:
-                    break  # shutdown
+                    break
 
                 message, sid, out_q = item
                 try:
@@ -105,7 +159,7 @@ class _SessionWorker:
         except Exception as exc:
             logger.exception("Session worker %s crashed", self.session_id)
             self._connect_error = exc
-            self._started.set()  # unblock start() if sandbox creation failed
+            self._started.set()
 
         finally:
             if self._sandbox_created:
@@ -114,7 +168,6 @@ class _SessionWorker:
 
     async def _execute_query(self, message: str, session_id: str, out_q: asyncio.Queue) -> None:
         """Execute a query in the sandbox and stream parsed messages to out_q."""
-        # Add user message to history
         self._conversation_history.append({"role": "user", "content": message})
 
         # Build command
@@ -122,7 +175,7 @@ class _SessionWorker:
             "python",
             "/tmp/sandbox_runner.py",
             "--message",
-            message,  # No quotes - will be passed as arg
+            message,
             "--session-id",
             session_id,
             "--anthropic-api-key",
@@ -136,7 +189,7 @@ class _SessionWorker:
                 "slack_team_id": settings.slack_team_id if settings.slack_configured else "",
             }),
             "--history",
-            json.dumps(self._conversation_history[:-1]),  # Pass history BEFORE current message
+            json.dumps(self._conversation_history[:-1]),
         ]
 
         if settings.slack_configured:
@@ -145,26 +198,31 @@ class _SessionWorker:
         if settings.linear_configured:
             cmd_args.extend(["--linear-api-key", settings.linear_api_key])
 
-        # Build shell command (using shlex-style quoting)
         import shlex
-
         command = " ".join(shlex.quote(arg) for arg in cmd_args)
 
-        # Track assistant response for history
         assistant_response_chunks = []
 
-        # Stream output and parse JSON lines
         async def on_stdout(line: str):
-            """Parse JSON line and convert to SDK message object."""
+            """Parse JSON line and convert to SDK message object.
+
+            Also intercepts slack_proxy requests and fulfills them from the backend.
+            """
             try:
                 event = json.loads(line)
                 event_type = event.get("type")
 
-                if event_type == "text_delta":
-                    # Track response text for history
-                    assistant_response_chunks.append(event["text"])
+                # --- Slack proxy: intercept and fulfill from backend ---
+                if event_type == "slack_proxy":
+                    logger.info(f"Intercepted Slack proxy request: method={event.get('method')}, id={event.get('id')}")
+                    # Fire and forget — the sandbox tool polls for the response file
+                    asyncio.create_task(
+                        _handle_slack_proxy(self.session_id, event)
+                    )
+                    return  # Don't forward proxy requests to the output queue
 
-                    # Convert to StreamEvent for compatibility with generate_response()
+                if event_type == "text_delta":
+                    assistant_response_chunks.append(event["text"])
                     msg = StreamEvent(
                         uuid=f"evt-{id(event)}",
                         session_id=session_id,
@@ -187,7 +245,6 @@ class _SessionWorker:
                     await out_q.put(msg)
 
                 elif event_type == "agent_activity":
-                    # Convert to AssistantMessage with ToolUseBlock
                     msg = AssistantMessage(
                         content=[
                             ToolUseBlock(
@@ -230,21 +287,17 @@ class _SessionWorker:
                     await out_q.put(msg)
 
                 elif event_type == "error":
-                    # Raise exception to trigger error handling
                     raise RuntimeError(event["message"])
 
             except json.JSONDecodeError:
-                # Sandbox emits non-JSON log lines (e.g. [INFO] ...) — skip quietly
                 logger.debug(f"Non-JSON sandbox output: {line}")
             except Exception as e:
                 logger.error(f"Error processing sandbox output: {e}")
                 await out_q.put(e)
 
-        # Execute command with streaming
         stderr_lines = []
 
         async def on_stderr(line: str):
-            """Capture stderr for error reporting."""
             stderr_lines.append(line)
             logger.error(f"Sandbox stderr: {line}")
 
@@ -253,7 +306,7 @@ class _SessionWorker:
             command=command,
             on_stdout=on_stdout,
             on_stderr=on_stderr,
-            timeout=600,  # 10 minutes
+            timeout=600,
         )
 
         if result["error"]:
@@ -263,7 +316,6 @@ class _SessionWorker:
             stderr_msg = "\n".join(stderr_lines) if stderr_lines else "No stderr output"
             raise RuntimeError(f"Sandbox script exited with code {result['exit_code']}. Stderr: {stderr_msg}")
 
-        # Add assistant response to conversation history
         if assistant_response_chunks:
             assistant_response = "".join(assistant_response_chunks)
             self._conversation_history.append({"role": "assistant", "content": assistant_response})
@@ -283,7 +335,7 @@ class _SessionWorker:
             yield msg
 
     async def stop(self) -> None:
-        """Signal the worker to shut down and wait for it (UNCHANGED)."""
+        """Signal the worker to shut down and wait for it."""
         await self._input.put(None)
         if self._task:
             try:
@@ -298,7 +350,7 @@ class _SessionWorker:
 
 
 # ---------------------------------------------------------------------------
-# Session worker pool (UNCHANGED)
+# Session worker pool
 # ---------------------------------------------------------------------------
 
 _workers: dict[str, _SessionWorker] = {}
@@ -306,16 +358,14 @@ _worker_locks: dict[str, asyncio.Lock] = {}
 
 
 async def get_or_create_worker(session_id: str) -> _SessionWorker:
-    """Return an existing worker for this session, or create and start one (UNCHANGED)."""
+    """Return an existing worker for this session, or create and start one."""
     if session_id in _workers:
         return _workers[session_id]
 
-    # Per-session lock prevents duplicate workers from concurrent requests
     if session_id not in _worker_locks:
         _worker_locks[session_id] = asyncio.Lock()
 
     async with _worker_locks[session_id]:
-        # Double-check after acquiring lock
         if session_id in _workers:
             return _workers[session_id]
 
@@ -326,7 +376,7 @@ async def get_or_create_worker(session_id: str) -> _SessionWorker:
 
 
 async def remove_session_client(session_id: str) -> None:
-    """Stop and remove the worker for a session (UNCHANGED)."""
+    """Stop and remove the worker for a session."""
     _worker_locks.pop(session_id, None)
     worker = _workers.pop(session_id, None)
     if worker is not None:
@@ -337,6 +387,6 @@ async def remove_session_client(session_id: str) -> None:
 
 
 async def disconnect_all_clients() -> None:
-    """Stop all active workers. Called on server shutdown (UNCHANGED)."""
+    """Stop all active workers. Called on server shutdown."""
     for sid in list(_workers.keys()):
         await remove_session_client(sid)
