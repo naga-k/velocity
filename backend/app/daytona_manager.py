@@ -105,9 +105,10 @@ class DaytonaSandboxManager:
 
         logger.info(f"Installing claude-agent-sdk in sandbox {session_id}")
 
-        # Only install claude-agent-sdk (everything else is in default snapshot)
+        # Install claude-agent-sdk from GitHub fork (has ThinkingConfigAdaptive)
+        # Everything else is pre-installed in the default snapshot
         setup_commands = [
-            "pip install --quiet anthropic claude-agent-sdk httpx",
+            "pip install --quiet anthropic httpx git+https://github.com/naga-k/claude-agent-sdk-python.git@fix/558-message-buffer-deadlock",
         ]
 
         for cmd in setup_commands:
