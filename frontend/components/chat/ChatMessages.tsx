@@ -3,10 +3,14 @@
 import { useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeHighlight from "rehype-highlight";
+import "highlight.js/styles/github-dark.css";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Message } from "@/lib/types";
+import { ToolCallCard } from "./ToolCallCard";
+import { ThinkingSection } from "./ThinkingSection";
 
 interface ChatMessagesProps {
   messages: Message[];
@@ -36,6 +40,20 @@ function MessageBubble({ message }: { message: Message }) {
       </Avatar>
 
       <div className={`max-w-[80%] ${isUser ? "" : "space-y-2"}`}>
+        {/* Thinking section (collapsible) */}
+        {!isUser && message.thinking && (
+          <ThinkingSection thinking={message.thinking} />
+        )}
+
+        {/* Tool calls */}
+        {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
+          <div className="space-y-1.5">
+            {message.toolCalls.map((tc, idx) => (
+              <ToolCallCard key={idx} tool={tc.tool} params={tc.params} />
+            ))}
+          </div>
+        )}
+
         {/* Message card with gradient */}
         <div
           className={`rounded-xl px-4 py-3 shadow-sm transition-all ${
@@ -49,7 +67,7 @@ function MessageBubble({ message }: { message: Message }) {
               <p className="whitespace-pre-wrap text-sm leading-relaxed">{message.content}</p>
             ) : (
               <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:font-semibold prose-p:leading-relaxed prose-li:leading-relaxed">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
                   {message.content}
                 </ReactMarkdown>
               </div>

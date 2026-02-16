@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import AsyncGenerator
 
 from claude_agent_sdk import (
@@ -26,6 +27,7 @@ from claude_agent_sdk.types import StreamEvent
 from app.config import settings
 from app.models import (
     AgentActivityData,
+    CitationData,
     DoneEventData,
     ErrorEventData,
     ThinkingEventData,
@@ -40,6 +42,17 @@ from .session_worker import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_citations(text: str) -> list[tuple[str, str]]:
+    """Extract (type, url) from text content."""
+    citations: list[tuple[str, str]] = []
+    for url in re.findall(r'https://linear\.app/[^\s\)\]]+', text):
+        citations.append(("linear", url))
+    for url in re.findall(r'https://[^.\s]+\.slack\.com/[^\s\)\]]+', text):
+        citations.append(("slack", url))
+    return citations
+
 
 # Re-export public interface
 __all__ = ["generate_response", "remove_session_client", "disconnect_all_clients"]
@@ -73,6 +86,7 @@ async def generate_response(
         return
 
     agents_used: list[str] = []
+    active_agents: list[str] = []
     done_emitted = False
 
     try:
@@ -93,6 +107,20 @@ async def generate_response(
                 # has completed (SDK handles execution internally and
                 # does NOT yield ToolResultBlock). Reset the flag so
                 # post-tool text can flow through.
+
+                # Emit "completed" for all active agents
+                if active_agents:
+                    for agent_name in active_agents:
+                        yield (
+                            "agent_activity",
+                            AgentActivityData(
+                                agent=agent_name,
+                                status="completed",
+                                task="",
+                            ).model_dump_json(),
+                        )
+                    active_agents.clear()
+
                 inside_tool_call = False
 
                 for block in msg.content:
@@ -100,7 +128,19 @@ async def generate_response(
                         # Emit only if no deltas were streamed for this
                         # segment (avoids duplicate text)
                         if not has_streamed_text and not inside_tool_call:
-                            yield ("text", json.dumps(block.text))
+                            text_content = block.text
+                            yield ("text", json.dumps(text_content))
+                            # Emit citations for any Linear/Slack URLs
+                            for ctype, curl in _extract_citations(text_content):
+                                yield (
+                                    "citation",
+                                    CitationData(
+                                        type=ctype,
+                                        url=curl,
+                                        title=f"{ctype.title()} Reference",
+                                        snippet="",
+                                    ).model_dump_json(),
+                                )
                         has_streamed_text = False
 
                     elif isinstance(block, ToolUseBlock):
@@ -113,6 +153,7 @@ async def generate_response(
                             )
                             if agent_type not in agents_used:
                                 agents_used.append(agent_type)
+                            active_agents.append(agent_type)
                             yield (
                                 "agent_activity",
                                 AgentActivityData(
@@ -131,6 +172,19 @@ async def generate_response(
                             )
 
                     elif isinstance(block, ToolResultBlock):
+                        # Emit "completed" for active agents on tool result
+                        if active_agents:
+                            for agent_name in active_agents:
+                                yield (
+                                    "agent_activity",
+                                    AgentActivityData(
+                                        agent=agent_name,
+                                        status="completed",
+                                        task="",
+                                    ).model_dump_json(),
+                                )
+                            active_agents.clear()
+
                         inside_tool_call = False
                         has_streamed_text = False
 
@@ -144,7 +198,19 @@ async def generate_response(
                     delta = event.get("delta", {})
                     if delta.get("type") == "text_delta":
                         has_streamed_text = True
-                        yield ("text", json.dumps(delta.get("text", "")))
+                        text_chunk = delta.get("text", "")
+                        yield ("text", json.dumps(text_chunk))
+                        # Emit citations for any Linear/Slack URLs in chunk
+                        for ctype, curl in _extract_citations(text_chunk):
+                            yield (
+                                "citation",
+                                CitationData(
+                                    type=ctype,
+                                    url=curl,
+                                    title=f"{ctype.title()} Reference",
+                                    snippet="",
+                                ).model_dump_json(),
+                            )
                     elif delta.get("type") == "thinking_delta":
                         yield (
                             "thinking",
