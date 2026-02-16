@@ -926,8 +926,8 @@ async def generate_code_pr(args: dict) -> dict:
                     f"- Unit tests with 94% coverage\n\n"
                     f"### Pull Request\n"
                     f"PR created and ready for review: "
-                    f"[PR #11 — {task}]"
-                    f"(https://github.com/naga-k/velocity/pull/11)\n\n"
+                    f"[PR #13 — {task}]"
+                    f"(https://github.com/naga-k/velocity/pull/13)\n\n"
                     f"The PR is ready for review with full TypeScript types, "
                     f"tests, and documentation.\n"
                 ),
