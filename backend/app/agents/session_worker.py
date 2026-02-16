@@ -47,6 +47,7 @@ class _SessionWorker:
         self._started = asyncio.Event()
         self._connect_error: Exception | None = None
         self._sandbox_created = False
+        self._conversation_history: list[dict[str, str]] = []  # Store conversation turns
 
     async def start(self) -> None:
         """Launch the background worker task."""
@@ -113,6 +114,9 @@ class _SessionWorker:
 
     async def _execute_query(self, message: str, session_id: str, out_q: asyncio.Queue) -> None:
         """Execute a query in the sandbox and stream parsed messages to out_q."""
+        # Add user message to history
+        self._conversation_history.append({"role": "user", "content": message})
+
         # Build command
         cmd_args = [
             "python",
@@ -131,6 +135,8 @@ class _SessionWorker:
                 "max_budget_usd": settings.max_budget_per_session_usd,
                 "slack_team_id": settings.slack_team_id if settings.slack_configured else "",
             }),
+            "--history",
+            json.dumps(self._conversation_history[:-1]),  # Pass history BEFORE current message
         ]
 
         if settings.slack_configured:
@@ -144,6 +150,9 @@ class _SessionWorker:
 
         command = " ".join(shlex.quote(arg) for arg in cmd_args)
 
+        # Track assistant response for history
+        assistant_response_chunks = []
+
         # Stream output and parse JSON lines
         async def on_stdout(line: str):
             """Parse JSON line and convert to SDK message object."""
@@ -152,6 +161,9 @@ class _SessionWorker:
                 event_type = event.get("type")
 
                 if event_type == "text_delta":
+                    # Track response text for history
+                    assistant_response_chunks.append(event["text"])
+
                     # Convert to StreamEvent for compatibility with generate_response()
                     msg = StreamEvent(
                         uuid=f"evt-{id(event)}",
@@ -249,6 +261,11 @@ class _SessionWorker:
         if result["exit_code"] != 0:
             stderr_msg = "\n".join(stderr_lines) if stderr_lines else "No stderr output"
             raise RuntimeError(f"Sandbox script exited with code {result['exit_code']}. Stderr: {stderr_msg}")
+
+        # Add assistant response to conversation history
+        if assistant_response_chunks:
+            assistant_response = "".join(assistant_response_chunks)
+            self._conversation_history.append({"role": "assistant", "content": assistant_response})
 
     async def query_and_stream(
         self, message: str, session_id: str

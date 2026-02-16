@@ -531,11 +531,13 @@ async def run_agent(
     slack_token: str | None,
     linear_api_key: str | None,
     config: dict,
+    history: list[dict[str, str]] | None = None,
 ) -> None:
-    """Main agent execution loop."""
+    """Main agent execution loop with conversation history support."""
     agents_used = []
     has_streamed_text = False
     inside_tool_call = False
+    history = history or []
 
     try:
         # Build MCP servers
@@ -562,9 +564,19 @@ async def run_agent(
                 },
             }
 
+        # Build enhanced system prompt with conversation history
+        system_prompt = SYSTEM_PROMPT
+        if history:
+            history_text = "\n\n## Previous Conversation\n\n"
+            for turn in history:
+                role = turn["role"].capitalize()
+                content = turn["content"]
+                history_text += f"**{role}:** {content}\n\n"
+            system_prompt = f"{SYSTEM_PROMPT}\n{history_text}The user's current message follows. Respond with awareness of the conversation history above."
+
         # Build SDK options
         options = ClaudeAgentOptions(
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             model=config.get("model_opus", "claude-opus-4-6"),
             agents=AGENTS,
             mcp_servers=mcp_servers,
@@ -674,6 +686,7 @@ def main():
     parser.add_argument("--slack-token", default=None, help="Slack bot token (optional)")
     parser.add_argument("--linear-api-key", default=None, help="Linear API key (optional)")
     parser.add_argument("--config", default="{}", help="JSON config (max_turns, etc.)")
+    parser.add_argument("--history", default="[]", help="JSON conversation history (list of {role, content})")
 
     args = parser.parse_args()
 
@@ -684,6 +697,12 @@ def main():
         emit_error("Invalid configuration JSON", recoverable=False)
         emit_done()
         sys.exit(1)
+
+    try:
+        history = json.loads(args.history)
+    except json.JSONDecodeError:
+        logger.error("Invalid JSON in --history")
+        history = []
 
     # Set env vars for tools
     import os
@@ -703,6 +722,7 @@ def main():
             slack_token=args.slack_token,
             linear_api_key=args.linear_api_key,
             config=config,
+            history=history,
         )
     )
 
