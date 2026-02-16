@@ -27,7 +27,7 @@ export default function Home() {
             </h1>
           </div>
           <span className="text-xs font-medium text-muted-foreground">
-            AI PM Agent
+            Claude Code for PMs
           </span>
         </div>
       </header>

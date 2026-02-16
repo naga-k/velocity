@@ -1,6 +1,6 @@
-# Velocity — AI PM Agent
+# Velocity — Claude Code for PMs
 
-Agentic AI tool for startup PMs powered by Claude Opus 4.6. Connects to existing tools (Linear, Slack) and helps PMs make better product decisions by pulling together external signals and internal state. Built for the Anthropic Build with Claude Hackathon (deadline: Feb 16, 2026).
+Claude Code for Product Managers — powered by Claude Opus 4.6. Connects to existing tools (Linear, Slack) and helps PMs make better product decisions by pulling together external signals and internal state. Built for the Anthropic Build with Claude Hackathon (deadline: Feb 16, 2026).
 
 ## Current State
 

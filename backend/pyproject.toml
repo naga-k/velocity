@@ -1,7 +1,7 @@
 [project]
 name = "velocity-backend"
 version = "0.1.0"
-description = "Velocity AI PM Agent — FastAPI backend"
+description = "Velocity — Claude Code for PMs — FastAPI backend"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",

@@ -148,7 +148,7 @@ export function ChatMessages({ messages }: ChatMessagesProps) {
             Velocity
           </h2>
           <p className="text-sm leading-relaxed">
-            Your AI product management assistant.
+            Claude Code for Product Managers.
             <br />
             Ask about sprints, priorities, or backlog.
           </p>

@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Velocity — AI PM Agent",
+  title: "Velocity — Claude Code for PMs",
   description:
-    "AI-powered product management assistant for startup PMs. Connects to Linear, Slack, and Notion.",
+    "Claude Code for Product Managers. An agentic AI assistant powered by Opus 4.6 that connects to Linear, Slack, and more.",
 };
 
 export default function RootLayout({

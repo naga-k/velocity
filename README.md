@@ -1,6 +1,6 @@
-# Velocity — AI PM Agent
+# Velocity — Claude Code for PMs
 
-An agentic AI product management assistant for startup PMs. Connects to your existing tools (Linear, Slack) and helps you make better product decisions by synthesizing external signals and internal state — so you spend less time gathering context and more time thinking.
+Claude Code for Product Managers — an agentic AI assistant that connects to your real PM tools and helps you make better product decisions. Pulls live data from Linear, Slack, and Amplitude, then synthesizes it into actionable outputs: PRDs, Linear issues, Slack updates — all grounded in real data.
 
 Built with Claude Opus 4.6 and the Claude Agent SDK for the Anthropic Build with Claude Hackathon (Feb 2026).
 
