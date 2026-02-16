@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     slack_bot_token: str = ""
     slack_team_id: str = ""
     linear_api_key: str = ""
+    github_token: str = ""
 
     # Daytona Sandboxes
     daytona_api_key: str = ""
@@ -50,6 +51,10 @@ class Settings(BaseSettings):
     @property
     def linear_configured(self) -> bool:
         return bool(self.linear_api_key)
+
+    @property
+    def github_configured(self) -> bool:
+        return bool(self.github_token)
 
     @property
     def daytona_configured(self) -> bool:

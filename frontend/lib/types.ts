@@ -87,6 +87,7 @@ export interface Message {
   content: string;
   citations: CitationData[];
   toolCalls?: ToolCallData[];
+  thinking?: string;
   isStreaming?: boolean;
 }
 

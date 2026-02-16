@@ -92,6 +92,7 @@ export function useChat(sessionId: string): UseChatReturn {
         let buffer = "";
         let currentEventType: SSEEventType | null = null;
         let dataLines: string[] = [];
+        let hadToolCallSinceText = false;
 
         const dispatchEvent = () => {
           if (!currentEventType || dataLines.length === 0) {
@@ -111,7 +112,13 @@ export function useChat(sessionId: string): UseChatReturn {
             switch (eventType) {
               case "text": {
                 if (typeof data === "string") {
-                  assistantContent += data;
+                  // After tool calls, replace previous filler text with the new response
+                  if (hadToolCallSinceText) {
+                    assistantContent = data;
+                    hadToolCallSinceText = false;
+                  } else {
+                    assistantContent += data;
+                  }
                   setMessages((prev) =>
                     prev.map((m) =>
                       m.id === assistantId
@@ -142,6 +149,9 @@ export function useChat(sessionId: string): UseChatReturn {
 
               case "agent_activity": {
                 const activity = data as AgentActivityData;
+                if (activity.status === "running") {
+                  hadToolCallSinceText = true;
+                }
                 setAgentActivity((prev) => {
                   const existing = prev.findIndex(
                     (a) => a.agent === activity.agent
@@ -170,6 +180,14 @@ export function useChat(sessionId: string): UseChatReturn {
 
               case "thinking": {
                 const thinkingData = data as { text: string };
+                // Accumulate thinking on the assistant message
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantId
+                      ? { ...m, thinking: (m.thinking || "") + thinkingData.text }
+                      : m
+                  )
+                );
                 // Store thinking text in current agent activity
                 setAgentActivity((prev) => {
                   if (prev.length === 0) return prev;
@@ -185,6 +203,7 @@ export function useChat(sessionId: string): UseChatReturn {
 
               case "tool_call": {
                 const toolCall = data as ToolCallData;
+                hadToolCallSinceText = true;
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === assistantId
