@@ -1,4 +1,4 @@
-# PRD: AI PM Agent
+# PRD: Velocity — Claude Code for PMs
 
 **Status:** Draft — living doc, will keep updating
 **Last updated:** Feb 12, 2026
@@ -7,7 +7,7 @@
 
 ## What Is This
 
-An agentic AI tool for startup PMs that connects to their existing tools and helps them make better product decisions. It pulls together external signals (user feedback, research, analytics) and internal state (backlog, roadmap, team work) so PMs spend less time gathering context and more time thinking.
+Claude Code for Product Managers — an agentic AI assistant that connects to your real PM tools and helps you make better product decisions. It pulls together external signals (user feedback, research, analytics) and internal state (backlog, roadmap, team work) so PMs spend less time gathering context and more time thinking.
 
 It covers the full decision cycle: from research and data analysis, through prioritization, all the way to generating the output docs (specs, PRDs, updates).
 

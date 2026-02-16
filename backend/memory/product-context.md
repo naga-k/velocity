@@ -1,7 +1,7 @@
 # Product Context — Velocity
 
 ## What is Velocity?
-Velocity is an AI-powered product management assistant for startup PMs. It connects to existing tools (Linear, Slack, Notion) and helps PMs make better product decisions by pulling together external signals and internal state.
+Velocity is Claude Code for Product Managers — an agentic AI assistant powered by Claude Opus 4.6. It connects to existing tools (Linear, Slack, Notion) and helps PMs make better product decisions by pulling together external signals and internal state.
 
 ## Key Use Cases
 1. **Sprint Prioritization** — Analyze backlog, team discussions, and customer feedback to recommend sprint priorities with evidence

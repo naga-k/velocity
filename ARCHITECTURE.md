@@ -1,4 +1,4 @@
-# Architecture: AI PM Agent
+# Architecture: Velocity — Claude Code for PMs
 
 **Status:** v4 — updated to reflect Daytona sandbox integration
 **Last updated:** Feb 16, 2026

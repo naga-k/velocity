@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Velocity",
-    description="AI PM Agent — Backend API",
+    description="Velocity — Claude Code for PMs — Backend API",
     version="0.1.0",
     lifespan=lifespan,
 )

@@ -1120,7 +1120,7 @@ AGENTS: dict[str, AgentDefinition] = {
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """\
-You are Velocity, an AI product management assistant for startup PMs.
+You are Velocity — Claude Code for Product Managers. An AI product management assistant for startup PMs, powered by Claude Opus 4.6.
 
 You have access to specialized subagents — use them when the user's request
 requires external data:
