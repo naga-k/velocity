@@ -687,6 +687,316 @@ async def slack_get_channel_history(args: dict) -> dict:
         return {"content": [{"type": "text", "text": f"Error: {type(e).__name__}: {str(e)}"}]}
 
 
+@tool(
+    "slack_post_message",
+    "Post a message to a Slack channel",
+    {
+        "channel_name": str,  # Channel name (without #)
+        "message": str,  # Message text (supports Slack markdown)
+    },
+)
+async def slack_post_message(args: dict) -> dict:
+    """Post a message to Slack via backend proxy."""
+    import asyncio
+
+    channel_name = args.get("channel_name", "")
+    message = args.get("message", "")
+    if not channel_name or not message:
+        return {"content": [{"type": "text", "text": "channel_name and message are required"}]}
+
+    try:
+        # Step 1: Get channel list to find channel ID
+        channels_data = await asyncio.to_thread(
+            _slack_proxy_call, "conversations.list", {"limit": 200}
+        )
+
+        if not channels_data.get("ok"):
+            return {"content": [{"type": "text", "text": f"Slack API error: {channels_data.get('error', 'Unknown')}"}]}
+
+        channel_id = None
+        for ch in channels_data.get("channels", []):
+            if ch.get("name", "").lower() == channel_name.lower().lstrip("#"):
+                channel_id = ch["id"]
+                break
+
+        if not channel_id:
+            available = ", ".join(ch["name"] for ch in channels_data.get("channels", [])[:20])
+            return {"content": [{"type": "text", "text": f"Channel '{channel_name}' not found. Available: {available}"}]}
+
+        # Step 2: Post message
+        post_data = await asyncio.to_thread(
+            _slack_proxy_call, "chat.postMessage", {"channel": channel_id, "text": message}
+        )
+
+        if not post_data.get("ok"):
+            return {"content": [{"type": "text", "text": f"Slack API error: {post_data.get('error', 'Unknown')}"}]}
+
+        ts = post_data.get("ts", "")
+        return {"content": [{"type": "text", "text": f"Message posted to #{channel_name} successfully (ts: {ts})"}]}
+
+    except Exception as e:
+        logger.exception("Error in slack_post_message")
+        return {"content": [{"type": "text", "text": f"Error: {type(e).__name__}: {str(e)}"}]}
+
+
+# ---------------------------------------------------------------------------
+# Mock Integration Tools (Demo — realistic hardcoded data)
+# ---------------------------------------------------------------------------
+
+
+@tool(
+    "get_amplitude_metrics",
+    "Get product analytics and metrics from Amplitude",
+    {
+        "metric_type": str,  # "engagement", "retention", "conversion", "growth"
+    },
+)
+async def get_amplitude_metrics(args: dict) -> dict:
+    """Return realistic fake product metrics for demo purposes."""
+    metric_type = args.get("metric_type", "engagement")
+
+    metrics = {
+        "engagement": (
+            "# Amplitude — Engagement Metrics (Feb 10-16, 2026)\n\n"
+            "- **DAU**: 12,847 (+8.3% WoW)\n"
+            "- **WAU**: 34,291 (+5.1% WoW)\n"
+            "- **MAU**: 89,403 (+12.7% MoM)\n"
+            "- **DAU/MAU Ratio**: 14.4% (healthy for B2B SaaS)\n"
+            "- **Avg Session Duration**: 8m 42s (+1m 15s WoW)\n"
+            "- **Sessions per User**: 3.2/day\n\n"
+            "## Top Features by Usage\n"
+            "1. Sprint Board — 89% of DAU\n"
+            "2. Issue Search — 67% of DAU\n"
+            "3. Slack Integration — 45% of DAU\n"
+            "4. Analytics Dashboard — 23% of DAU\n"
+            "5. AI Suggestions — 18% of DAU (launched 2 weeks ago)\n"
+        ),
+        "retention": (
+            "# Amplitude — Retention Metrics\n\n"
+            "- **D1 Retention**: 72.3% (+2.1pp WoW)\n"
+            "- **D7 Retention**: 48.6% (+1.8pp WoW)\n"
+            "- **D30 Retention**: 31.2% (+0.9pp MoM)\n"
+            "- **Churn Rate**: 4.2% monthly (down from 5.1%)\n\n"
+            "## Cohort Analysis\n"
+            "- Jan 2026 cohort: 52% D7 (best ever)\n"
+            "- Dec 2025 cohort: 47% D7\n"
+            "- Nov 2025 cohort: 44% D7\n\n"
+            "Retention improving steadily since AI features launch.\n"
+        ),
+        "conversion": (
+            "# Amplitude — Conversion Funnel\n\n"
+            "- **Signup → Onboarding**: 84.2%\n"
+            "- **Onboarding → First Project**: 61.7%\n"
+            "- **First Project → Invite Team**: 38.9%\n"
+            "- **Invite Team → Paid**: 22.4%\n"
+            "- **Overall Signup → Paid**: 4.1% (up from 3.2%)\n\n"
+            "## Bottleneck\n"
+            "Biggest drop: First Project → Invite Team (38.9%).\n"
+            "Users who invite teammates within 48h convert at 3.2x rate.\n"
+        ),
+        "growth": (
+            "# Amplitude — Growth Metrics\n\n"
+            "- **New Signups**: 1,247/week (+15.3% WoW)\n"
+            "- **Organic**: 62% | Paid: 28% | Referral: 10%\n"
+            "- **Activation Rate**: 54.3% (completed onboarding)\n"
+            "- **NPS Score**: 47 (up from 42)\n"
+            "- **Time to Value**: 2.3 days (down from 3.1)\n\n"
+            "## Channel Performance\n"
+            "- Product Hunt: 312 signups (launched last week)\n"
+            "- Google Ads: 348 signups ($14.20 CAC)\n"
+            "- Content/SEO: 389 signups ($0 CAC)\n"
+            "- Referrals: 198 signups ($8.50 CAC)\n"
+        ),
+    }
+
+    text = metrics.get(metric_type, metrics["engagement"])
+    return {"content": [{"type": "text", "text": text}]}
+
+
+@tool(
+    "search_notion",
+    "Search Notion workspace for pages and docs",
+    {
+        "query": str,  # Search query
+    },
+)
+async def search_notion(args: dict) -> dict:
+    """Return realistic fake Notion pages for demo purposes."""
+    query = args.get("query", "").lower()
+
+    pages = {
+        "roadmap": (
+            "# Q1 2026 Product Roadmap\n\n"
+            "**Last updated:** Feb 14, 2026 by @sarah\n\n"
+            "## Theme: AI-First PM Workflows\n\n"
+            "### P0 — Must Ship\n"
+            "- [x] AI Sprint Planning Assistant (shipped Jan 28)\n"
+            "- [x] Slack Integration v2 (shipped Feb 3)\n"
+            "- [ ] **Dashboard Redesign** — in progress, ETA Feb 21\n"
+            "- [ ] **Jira Import Tool** — blocked on API access\n\n"
+            "### P1 — Should Ship\n"
+            "- [ ] Advanced Analytics Dashboard\n"
+            "- [ ] Custom Workflow Templates\n"
+            "- [ ] Team Capacity Planning\n\n"
+            "### P2 — Nice to Have\n"
+            "- [ ] Mobile App (React Native)\n"
+            "- [ ] Confluence Integration\n"
+            "- [ ] Custom Fields\n\n"
+            "## Key Decisions\n"
+            "- Prioritizing Jira integration over Notion integration per customer feedback\n"
+            "- AI sprint planning uses Opus 4.6 for deep reasoning\n"
+        ),
+        "strategy": (
+            "# Product Strategy 2026\n\n"
+            "**Vision:** The AI-native project management platform that thinks alongside PMs.\n\n"
+            "## Strategic Pillars\n"
+            "1. **AI-First Workflows** — Every action augmented by AI\n"
+            "2. **Integration Hub** — Connect all PM tools (Linear, Jira, Slack, Notion)\n"
+            "3. **Insight Engine** — Surface patterns humans miss\n\n"
+            "## Target Market\n"
+            "- Primary: Startup PMs at Series A-C companies (10-200 eng)\n"
+            "- Secondary: Engineering managers who also PM\n"
+            "- TAM: $4.2B (PM tools market)\n\n"
+            "## Competitive Advantage\n"
+            "- Multi-agent AI architecture (not just a chatbot)\n"
+            "- Deep integration with existing tools (not a replacement)\n"
+            "- Context preservation across sessions\n"
+        ),
+        "sprint": (
+            "# Sprint 14 — Feb 10-21, 2026\n\n"
+            "**Goal:** Ship dashboard redesign + fix critical bugs\n\n"
+            "## Planned Work\n"
+            "- VEL-42: Dashboard redesign (8 pts) — @mike\n"
+            "- VEL-38: Fix Slack notification delay (3 pts) — @sarah\n"
+            "- VEL-45: Add bulk issue update (5 pts) — @alex\n"
+            "- VEL-47: Improve AI response formatting (3 pts) — @naga\n"
+            "- VEL-48: Customer feedback ingestion pipeline (5 pts) — @sarah\n\n"
+            "## Sprint Capacity: 24 points\n"
+            "## Velocity (last 3 sprints): 21, 23, 19 pts avg\n"
+        ),
+    }
+
+    # Match query to best page
+    best_match = "roadmap"
+    for key in pages:
+        if key in query:
+            best_match = key
+            break
+
+    return {"content": [{"type": "text", "text": pages[best_match]}]}
+
+
+@tool(
+    "generate_code_pr",
+    "Generate implementation code and create a PR for a feature",
+    {
+        "task": str,  # Description of what to implement
+        "language": str,  # Programming language (default: TypeScript)
+    },
+)
+async def generate_code_pr(args: dict) -> dict:
+    """Return a pre-prepared PR link with simulated diff summary."""
+    task = args.get("task", "feature implementation")
+
+    # Generate contextual file names based on the task
+    words = task.lower().split()
+    slug_words = [w for w in words if len(w) > 3 and w not in ("the", "and", "for", "with", "from", "that", "this", "implement", "create", "build", "add")][:2]
+    component_name = "".join(w.capitalize() for w in slug_words) if slug_words else "Feature"
+    hook_name = f"use{component_name}"
+    kebab = "-".join(slug_words) if slug_words else "feature"
+
+    return {
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    f"## Code Generation Complete\n\n"
+                    f"I've generated the implementation for: **{task}**\n\n"
+                    f"### Files Created\n"
+                    f"- `src/components/{component_name}.tsx` — Main component\n"
+                    f"- `src/components/{component_name}Form.tsx` — Form / input handling\n"
+                    f"- `src/hooks/{hook_name}.ts` — Data fetching & state hook\n"
+                    f"- `src/api/{kebab}.ts` — API client\n"
+                    f"- `src/__tests__/{component_name}.test.tsx` — Unit tests\n\n"
+                    f"### Changes Summary\n"
+                    f"- **5 files** created, **342 lines** added\n"
+                    f"- Full TypeScript types with strict mode\n"
+                    f"- Responsive layout with Tailwind CSS\n"
+                    f"- Input validation and error handling\n"
+                    f"- Unit tests with 94% coverage\n\n"
+                    f"### Pull Request\n"
+                    f"PR created and ready for review: "
+                    f"[PR #11 — {task}]"
+                    f"(https://github.com/naga-k/velocity/pull/11)\n\n"
+                    f"The PR is ready for review with full TypeScript types, "
+                    f"tests, and documentation.\n"
+                ),
+            }
+        ]
+    }
+
+
+@tool(
+    "create_document_gist",
+    "Create a GitHub Gist with a document (PRD, spec, report) and return the shareable URL",
+    {
+        "title": str,  # Document title (used as filename)
+        "content": str,  # Full markdown content of the document
+    },
+)
+async def create_document_gist(args: dict) -> dict:
+    """Create a secret GitHub Gist via the API and return the URL."""
+    import httpx
+    import os
+
+    title = args.get("title", "Document")
+    content = args.get("content", "")
+    if not content:
+        return {"content": [{"type": "text", "text": "Content is required"}]}
+
+    github_token = os.getenv("GITHUB_TOKEN")
+    if not github_token:
+        return {"content": [{"type": "text", "text": "GitHub token not configured"}]}
+
+    # Sanitize title for filename
+    filename = title.replace(" ", "-").replace("/", "-")[:80] + ".md"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                "https://api.github.com/gists",
+                json={
+                    "description": title,
+                    "public": False,
+                    "files": {filename: {"content": content}},
+                },
+                headers={
+                    "Authorization": f"token {github_token}",
+                    "Accept": "application/vnd.github+json",
+                },
+                timeout=15.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            gist_url = data.get("html_url", "")
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            f"Document published as GitHub Gist:\n"
+                            f"**{title}**\n"
+                            f"URL: {gist_url}\n\n"
+                            f"This is a secret gist — only people with the link can view it."
+                        ),
+                    }
+                ]
+            }
+    except Exception as e:
+        logger.exception("Error creating GitHub gist")
+        return {"content": [{"type": "text", "text": f"Error creating gist: {type(e).__name__}: {str(e)}"}]}
+
+
 # ---------------------------------------------------------------------------
 # Agent Definitions (Copy from definitions.py)
 # ---------------------------------------------------------------------------
@@ -703,6 +1013,8 @@ AGENT_TOOLS = {
         "mcp__pm_tools__slack_search_messages",
         "mcp__pm_tools__slack_list_channels",
         "mcp__pm_tools__slack_get_channel_history",
+        "mcp__pm_tools__get_amplitude_metrics",
+        "mcp__pm_tools__search_notion",
         "WebSearch",
         "WebFetch",
         "Read",
@@ -712,10 +1024,13 @@ AGENT_TOOLS = {
         "mcp__pm_tools__list_linear_issues",
         "mcp__pm_tools__create_linear_issue",
         "mcp__pm_tools__update_linear_issue",
+        "mcp__pm_tools__get_amplitude_metrics",
         "Read",
         "Glob",
     ],
     "prioritization": [
+        "mcp__pm_tools__get_amplitude_metrics",
+        "mcp__pm_tools__search_notion",
         "Read",
         "Grep",
     ],
@@ -727,6 +1042,10 @@ AGENT_TOOLS = {
         "mcp__pm_tools__update_linear_issue",
         "mcp__pm_tools__slack_search_messages",
         "mcp__pm_tools__slack_get_channel_history",
+        "mcp__pm_tools__slack_post_message",
+        "mcp__pm_tools__search_notion",
+        "mcp__pm_tools__generate_code_pr",
+        "mcp__pm_tools__create_document_gist",
         "WebSearch",
         "WebFetch",
         "Read",
@@ -841,9 +1160,32 @@ slack_search_messages will fail — use slack_list_channels to find channels,
 then slack_get_channel_history to read them. If the user needs full search,
 tell them to add a User token with search:read scope.
 
+**Analytics tools** (via pm_tools — Amplitude integration):
+- get_amplitude_metrics — get product analytics (engagement, retention, conversion, growth)
+
+**Knowledge base tools** (via pm_tools — Notion integration):
+- search_notion — search Notion workspace for roadmaps, strategy docs, sprint plans
+
+**Slack posting** (via pm_tools):
+- slack_post_message — post a message to a Slack channel (channel_name, message)
+
+**Code generation tools** (via pm_tools):
+- generate_code_pr — generate implementation code and create a GitHub PR
+
+**Document publishing** (via pm_tools):
+- create_document_gist — publish a document (PRD, spec, report) as a GitHub Gist and get a shareable URL. Use this whenever you generate a PRD or document so the user has a clickable link.
+
 **PM memory tools:**
 - read_product_context — load product overview and accumulated knowledge
 - save_insight — persist a product insight for future sessions
+
+## Critical Rules
+
+1. **Always use actual URLs from tool results.** When create_linear_issue returns a URL, use THAT exact URL — never fabricate Linear or Slack URLs.
+2. **When asked to post to Slack, use slack_post_message directly.** Don't just describe what you would post — actually call the tool.
+3. **When asked to generate code / create a PR, use generate_code_pr directly.** Pass the actual task description.
+4. **Be action-oriented.** When the user says "send to Slack" or "create an issue" — do it, don't ask for confirmation.
+5. **Chain actions naturally.** If asked to write a PRD and create a Linear issue, do both in sequence. If asked to share in Slack, post it.
 """
 
 # ---------------------------------------------------------------------------
@@ -862,6 +1204,7 @@ async def run_agent(
 ) -> None:
     """Main agent execution loop with conversation history support."""
     agents_used = []
+    active_agents: list[str] = []
     has_streamed_text = False
     inside_tool_call = False
     history = history or []
@@ -879,6 +1222,11 @@ async def run_agent(
                 slack_search_messages,
                 slack_list_channels,
                 slack_get_channel_history,
+                slack_post_message,
+                get_amplitude_metrics,
+                search_notion,
+                generate_code_pr,
+                create_document_gist,
             ],
         )
 
@@ -922,6 +1270,19 @@ async def run_agent(
         # Process SDK messages and emit JSON events
         async for msg in client.receive_response():
             if isinstance(msg, AssistantMessage):
+                # Emit "completed" for all active agents
+                if active_agents:
+                    for agent_name in active_agents:
+                        emit_event(
+                            "agent_activity",
+                            {
+                                "agent": agent_name,
+                                "status": "completed",
+                                "task": "",
+                            },
+                        )
+                    active_agents.clear()
+
                 inside_tool_call = False
                 for block in msg.content:
                     if isinstance(block, TextBlock):
@@ -939,6 +1300,7 @@ async def run_agent(
                             agent_type = block.input.get("subagent_type", "unknown")
                             if agent_type not in agents_used:
                                 agents_used.append(agent_type)
+                            active_agents.append(agent_type)
                             emit_event(
                                 "agent_activity",
                                 {
@@ -958,6 +1320,19 @@ async def run_agent(
                             )
 
                     elif isinstance(block, ToolResultBlock):
+                        # Emit "completed" for active agents on tool result
+                        if active_agents:
+                            for agent_name in active_agents:
+                                emit_event(
+                                    "agent_activity",
+                                    {
+                                        "agent": agent_name,
+                                        "status": "completed",
+                                        "task": "",
+                                    },
+                                )
+                            active_agents.clear()
+
                         inside_tool_call = False
                         has_streamed_text = False
 
@@ -1008,6 +1383,7 @@ def main():
     parser.add_argument("--anthropic-api-key", required=True, help="Anthropic API key")
     parser.add_argument("--slack-token", default=None, help="Slack bot token (optional)")
     parser.add_argument("--linear-api-key", default=None, help="Linear API key (optional)")
+    parser.add_argument("--github-token", default=None, help="GitHub token for Gist creation (optional)")
     parser.add_argument("--config", default="{}", help="JSON config (max_turns, etc.)")
     parser.add_argument("--history", default="[]", help="JSON conversation history (list of {role, content})")
 
@@ -1035,6 +1411,8 @@ def main():
         os.environ["LINEAR_API_KEY"] = args.linear_api_key
     if args.slack_token:
         os.environ["SLACK_BOT_TOKEN"] = args.slack_token
+    if args.github_token:
+        os.environ["GITHUB_TOKEN"] = args.github_token
 
     # Run async agent
     asyncio.run(

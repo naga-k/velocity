@@ -78,6 +78,13 @@ async def _handle_slack_proxy(session_id: str, request: dict) -> None:
                     headers=headers,
                 )
                 data = resp.json()
+            elif method == "chat.postMessage":
+                resp = await client.post(
+                    f"{base}/chat.postMessage",
+                    json={"channel": params.get("channel"), "text": params.get("text", "")},
+                    headers=headers,
+                )
+                data = resp.json()
             else:
                 data = {"ok": False, "error": f"unknown_method: {method}"}
 
@@ -197,6 +204,9 @@ class _SessionWorker:
 
         if settings.linear_configured:
             cmd_args.extend(["--linear-api-key", settings.linear_api_key])
+
+        if settings.github_configured:
+            cmd_args.extend(["--github-token", settings.github_token])
 
         import shlex
         command = " ".join(shlex.quote(arg) for arg in cmd_args)

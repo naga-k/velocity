@@ -9,7 +9,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Avatar } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Message } from "@/lib/types";
-import { ToolCallCard } from "./ToolCallCard";
+import { ToolCallGroup } from "./ToolCallCard";
 import { ThinkingSection } from "./ThinkingSection";
 
 interface ChatMessagesProps {
@@ -45,13 +45,9 @@ function MessageBubble({ message }: { message: Message }) {
           <ThinkingSection thinking={message.thinking} />
         )}
 
-        {/* Tool calls */}
+        {/* Tool calls — collapsed group */}
         {!isUser && message.toolCalls && message.toolCalls.length > 0 && (
-          <div className="space-y-1.5">
-            {message.toolCalls.map((tc, idx) => (
-              <ToolCallCard key={idx} tool={tc.tool} params={tc.params} />
-            ))}
-          </div>
+          <ToolCallGroup toolCalls={message.toolCalls} />
         )}
 
         {/* Message card with gradient */}
