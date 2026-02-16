@@ -12,7 +12,7 @@ import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from daytona import AsyncDaytona, Sandbox
+from daytona import AsyncDaytona, CreateSandboxFromSnapshotParams, Sandbox
 
 from app.config import settings
 
@@ -73,12 +73,13 @@ class DaytonaSandboxManager:
             logger.info(f"Creating Daytona sandbox for session {session_id}")
 
             # Use default snapshot (has Python & Node.js pre-installed for 27-90ms startup!)
-            sandbox = await self.client.create(
-                snapshot="daytona-medium",  # 2 vCPU, 4GB RAM - needed for MCP servers
+            params = CreateSandboxFromSnapshotParams(
+                snapshot="daytona-small",  # 1 vCPU, 2GB RAM - fits within memory limits
                 env_vars=sandbox_env,
                 auto_stop_interval=3600,  # Auto-stop after 1 hour of inactivity
                 auto_delete_interval=7200,  # Auto-delete after 2 hours
             )
+            sandbox = await self.client.create(params=params)
 
             self._sandboxes[session_id] = sandbox
             logger.info(f"Sandbox created for session {session_id}: {sandbox.id}")
