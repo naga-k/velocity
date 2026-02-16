@@ -175,21 +175,27 @@ class DaytonaSandboxManager:
             return {"exit_code": -1, "timed_out": False, "error": "Sandbox not found"}
 
         try:
-            # Create async session and execute command
+            # Execute shell command using process.exec (not code_interpreter)
             logger.info(f"Executing command in sandbox {session_id}: {command[:100]}...")
 
-            # Execute using code_interpreter for real-time streaming
-            # Daytona's code_interpreter.run_code() streams output via WebSocket
-            result = await sandbox.code_interpreter.run_code(
-                code=command,
-                on_stdout=lambda msg: asyncio.create_task(on_stdout(msg.output)),
-                on_stderr=lambda msg: asyncio.create_task(
-                    on_stderr(msg.output) if on_stderr else asyncio.sleep(0)
-                ),
-                timeout=timeout,
-            )
+            # Use process.exec for shell commands (code_interpreter is for Python code only)
+            result = await sandbox.process.exec(command)
 
             exit_code = result.exit_code if hasattr(result, "exit_code") else 0
+            stdout = result.result if hasattr(result, "result") else ""
+            stderr = result.error if hasattr(result, "error") else ""
+
+            # Parse stdout line by line and call callbacks
+            if stdout and on_stdout:
+                for line in stdout.strip().split('\n'):
+                    if line:
+                        await on_stdout(line)
+
+            if stderr and on_stderr:
+                for line in stderr.strip().split('\n'):
+                    if line:
+                        await on_stderr(line)
+
             logger.info(f"Command completed with exit code {exit_code}")
 
             return {"exit_code": exit_code, "timed_out": False, "error": None}
