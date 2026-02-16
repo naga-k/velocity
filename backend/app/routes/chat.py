@@ -24,4 +24,5 @@ async def chat(request: ChatRequest) -> EventSourceResponse:
     return EventSourceResponse(
         stream_sse_events(event_source),
         media_type="text/event-stream",
+        ping=5,  # Send ping every 5 seconds to keep HTTP/2 connection alive during sandbox creation
     )

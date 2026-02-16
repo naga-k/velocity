@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Velocity Frontend Test</title>
+    <style>
+        body { font-family: monospace; padding: 20px; }
+        #output { white-space: pre-wrap; background: #f0f0f0; padding: 10px; margin-top: 10px; }
+        button { padding: 10px 20px; font-size: 16px; }
+    </style>
+</head>
+<body>
+    <h1>Velocity SSE Test</h1>
+    <button onclick="testChat()">Send "Hello"</button>
+    <div id="output"></div>
+
+    <script>
+        function testChat() {
+            const output = document.getElementById('output');
+            output.textContent = 'Connecting...\n';
+
+            fetch('http://localhost:8000/api/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: 'Hello' })
+            })
+            .then(response => {
+                output.textContent += `Status: ${response.status} ${response.statusText}\n`;
+                output.textContent += `Headers: ${response.headers.get('content-type')}\n\n`;
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+
+                function read() {
+                    reader.read().then(({done, value}) => {
+                        if (done) {
+                            output.textContent += '\n[STREAM ENDED]';
+                            return;
+                        }
+                        const text = decoder.decode(value);
+                        output.textContent += text;
+                        read();
+                    });
+                }
+                read();
+            })
+            .catch(err => {
+                output.textContent += `ERROR: ${err}\n`;
+            });
+        }
+    </script>
+</body>
+</html>

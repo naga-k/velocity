@@ -158,12 +158,15 @@ class DaytonaSandboxManager:
         on_stderr: Callable[[str], Awaitable[None]] | None = None,
         timeout: int = 600,  # 10 minutes default
     ) -> dict[str, Any]:
-        """Execute command in sandbox and stream output via WebSocket callbacks.
+        """Execute command in sandbox and stream output in REAL-TIME via callbacks.
+
+        Uses Daytona's get_session_command_logs_async() to stream stdout/stderr
+        as they're produced, not after command completion.
 
         Args:
             session_id: Session identifier
             command: Command to execute
-            on_stdout: Async callback for stdout lines
+            on_stdout: Async callback for stdout lines (called for each line in real-time)
             on_stderr: Optional async callback for stderr lines
             timeout: Timeout in seconds (default 600 = 10 minutes)
 
@@ -176,27 +179,46 @@ class DaytonaSandboxManager:
             return {"exit_code": -1, "timed_out": False, "error": "Sandbox not found"}
 
         try:
-            # Execute shell command using process.exec (not code_interpreter)
             logger.info(f"Executing command in sandbox {session_id}: {command[:100]}...")
 
-            # Use process.exec for shell commands (code_interpreter is for Python code only)
-            result = await sandbox.process.exec(command)
+            # Start command execution (returns immediately with cmd_id)
+            cmd_result = await sandbox.process.exec(command)
+            cmd_id = cmd_result.cmd_id if hasattr(cmd_result, "cmd_id") else None
 
-            exit_code = result.exit_code if hasattr(result, "exit_code") else 0
-            stdout = result.result if hasattr(result, "result") else ""
-            stderr = result.error if hasattr(result, "error") else ""
+            if not cmd_id:
+                # Fallback: if no cmd_id, process synchronously (shouldn't happen with Daytona)
+                logger.warning("No cmd_id returned - falling back to sync processing")
+                exit_code = cmd_result.exit_code if hasattr(cmd_result, "exit_code") else 0
+                stdout = cmd_result.result if hasattr(cmd_result, "result") else ""
+                if stdout and on_stdout:
+                    for line in stdout.strip().split('\n'):
+                        if line:
+                            await on_stdout(line)
+                return {"exit_code": exit_code, "timed_out": False, "error": None}
 
-            # Parse stdout line by line and call callbacks
-            if stdout and on_stdout:
-                for line in stdout.strip().split('\n'):
-                    if line:
-                        await on_stdout(line)
+            # Stream logs in real-time using Daytona's log streaming API
+            logger.info(f"Streaming logs for command {cmd_id}")
 
-            if stderr and on_stderr:
-                for line in stderr.strip().split('\n'):
-                    if line:
-                        await on_stderr(line)
+            async def stdout_handler(line: str):
+                """Process each stdout line as it arrives."""
+                if line and on_stdout:
+                    await on_stdout(line)
 
+            async def stderr_handler(line: str):
+                """Process each stderr line as it arrives."""
+                if line and on_stderr:
+                    await on_stderr(line)
+
+            # Stream logs with callbacks (this returns when command completes)
+            await sandbox.process.get_session_command_logs_async(
+                session_id,
+                cmd_id,
+                stdout_handler,
+                stderr_handler if on_stderr else None,
+            )
+
+            # Get final exit code
+            exit_code = cmd_result.exit_code if hasattr(cmd_result, "exit_code") else 0
             logger.info(f"Command completed with exit code {exit_code}")
 
             return {"exit_code": exit_code, "timed_out": False, "error": None}

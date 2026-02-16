@@ -384,6 +384,13 @@ async def update_linear_issue(args: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Agent Definitions (Copy from definitions.py)
 # ---------------------------------------------------------------------------
+# TODO: Update this file with all 22 new tools from tools/ directory:
+#   - Memory: search_past_decisions, search_customer_feedback
+#   - Linear: 7 new tools (get_by_id, search_advanced, add_comment, etc.)
+#   - Prioritization: 6 new tools (RICE, impact-effort, weighted scoring, etc.)
+#   - Document: 4 new tools (PRD template, stakeholder update, etc.)
+# For now, agents will run locally with full tool set. Sandbox version can be
+# updated post-hackathon if Daytona execution is needed.
 
 AGENT_TOOLS = {
     "research": [

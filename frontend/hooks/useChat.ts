@@ -68,10 +68,16 @@ export function useChat(sessionId: string): UseChatReturn {
 
       try {
         abortRef.current = new AbortController();
+
+        // Set a longer timeout for Daytona sandbox creation + multi-agent workflows (3 minutes)
+        const timeoutId = setTimeout(() => abortRef.current?.abort(), 180000);
+
         const response = await sendChatMessage(
           { message: content, session_id: sessionId },
           abortRef.current.signal
         );
+
+        clearTimeout(timeoutId);
 
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);

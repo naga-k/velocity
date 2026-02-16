@@ -13,9 +13,37 @@ from claude_agent_sdk.types import ThinkingConfigAdaptive
 
 from app.config import settings
 
-from .base_tools import read_product_context, save_insight
 from .definitions import AGENTS
-from .linear_tools import create_linear_issue, list_linear_issues, update_linear_issue
+from .tools import (
+    # Memory tools
+    read_product_context,
+    save_insight,
+    search_past_decisions,
+    search_customer_feedback,
+    # Linear tools
+    create_linear_issue,
+    update_linear_issue,
+    list_linear_issues,
+    get_linear_issue_by_id,
+    search_linear_issues_advanced,
+    add_linear_comment,
+    get_linear_project_status,
+    bulk_update_linear_issues,
+    calculate_sprint_velocity,
+    get_issue_dependencies,
+    # Prioritization tools
+    apply_rice_framework,
+    apply_impact_effort_matrix,
+    calculate_weighted_scoring,
+    analyze_trade_offs,
+    estimate_engineering_effort,
+    assess_strategic_fit,
+    # Document tools
+    generate_prd_from_template,
+    generate_stakeholder_update,
+    validate_document_citations,
+    format_for_notion,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,45 +57,45 @@ MEMORY_DIR = Path(__file__).resolve().parent.parent.parent / "memory"
 # System prompt for the orchestrator (Opus)
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """\
-You are Velocity, an AI product management assistant for startup PMs.
-
-You have access to specialized subagents — use them when the user's request
-requires external data:
-
-- **research**: Search Slack conversations, the web, and other sources for
-  context, feedback, and background information.
-- **backlog**: Read project state from Linear — tickets, sprints, blockers,
-  velocity metrics.
-- **prioritization**: Rank and score items using frameworks like RICE or
-  impact-effort. Works with outputs from research and backlog agents.
-- **doc-writer**: Generate PRDs, stakeholder updates, sprint summaries, and
-  other grounded documents.
-
-When a task requires multiple types of information, run subagents in parallel
-when possible. Always ground your responses in real data from integrations.
-Cite sources. Be concise, actionable, and opinionated — but transparent about
-uncertainty.
-
-You also have PM memory tools:
-- **read_product_context**: Load the current product overview and accumulated
-  knowledge.
-- **save_insight**: Persist a new product insight for future sessions.
-"""
+PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
+SYSTEM_PROMPT = (PROMPTS_DIR / "orchestrator.md").read_text()
 
 # ---------------------------------------------------------------------------
 # MCP server construction
 # ---------------------------------------------------------------------------
 
-# Create the in-process PM tools server with ALL custom tools
+# Create the in-process PM tools server with ALL custom tools (24 total)
 _pm_tools_server = create_sdk_mcp_server(
     name="pm_tools",
     tools=[
+        # Memory tools (4)
         read_product_context,
         save_insight,
+        search_past_decisions,
+        search_customer_feedback,
+        # Linear tools (10)
         list_linear_issues,
         create_linear_issue,
         update_linear_issue,
+        get_linear_issue_by_id,
+        search_linear_issues_advanced,
+        add_linear_comment,
+        get_linear_project_status,
+        bulk_update_linear_issues,
+        calculate_sprint_velocity,
+        get_issue_dependencies,
+        # Prioritization tools (6)
+        apply_rice_framework,
+        apply_impact_effort_matrix,
+        calculate_weighted_scoring,
+        analyze_trade_offs,
+        estimate_engineering_effort,
+        assess_strategic_fit,
+        # Document tools (4)
+        generate_prd_from_template,
+        generate_stakeholder_update,
+        validate_document_citations,
+        format_for_notion,
     ],
 )
 
