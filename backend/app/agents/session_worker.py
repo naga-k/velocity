@@ -234,7 +234,8 @@ class _SessionWorker:
                     raise RuntimeError(event["message"])
 
             except json.JSONDecodeError:
-                logger.warning(f"Failed to parse JSON from sandbox: {line}")
+                # Sandbox emits non-JSON log lines (e.g. [INFO] ...) — skip quietly
+                logger.debug(f"Non-JSON sandbox output: {line}")
             except Exception as e:
                 logger.error(f"Error processing sandbox output: {e}")
                 await out_q.put(e)

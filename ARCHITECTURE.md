@@ -1,9 +1,29 @@
 # Architecture: AI PM Agent
 
-**Status:** v3 — updated to reflect Track A implementation (Claude Agent SDK merged)
-**Last updated:** Feb 14, 2026
-**Hackathon deadline:** Feb 16, 3:00 PM EST (~1.5 days remaining)
+**Status:** v4 — updated to reflect Daytona sandbox integration
+**Last updated:** Feb 16, 2026
+**Hackathon deadline:** Feb 16, 3:00 PM EST
 **Team:** Solo
+
+---
+
+## v4 Revision Summary (Feb 16, 2026)
+
+Daytona sandbox integration is complete on `daytona-integration` branch. Agent SDK now runs inside ephemeral Daytona sandboxes instead of locally. Key changes:
+
+**1. Daytona sandbox execution.** Each chat session gets its own ephemeral Daytona sandbox (1 vCPU, 2GB RAM). `sandbox_runner.py` is uploaded and executed inside the sandbox. The SDK, MCP servers, and all tools run in isolation. Secrets are passed as CLI args or env vars — never stored in sandbox filesystem.
+
+**2. Session worker pattern.** `session_worker.py` manages the sandbox lifecycle per session: create sandbox → install dependencies → upload script → execute with streaming → parse JSON stdout → push SDK-like message objects to an async queue → SSE to frontend.
+
+**3. Conversation history in sandbox.** Since each sandbox execution is stateless, conversation history is passed as a `--history` JSON arg. The orchestrator's system prompt includes previous turns for multi-turn context.
+
+**4. Linear tools via custom GraphQL (not MCP).** Linear integration uses custom `@tool`-decorated functions (`list_linear_issues`, `create_linear_issue`, `update_linear_issue`) that call the Linear GraphQL API directly. This gives us full control over status changes (resolving `state_name` → `stateId` via workflow states API) and null-safe error handling.
+
+**5. Slack MCP pre-installed in sandbox.** `@modelcontextprotocol/server-slack` is globally installed during sandbox setup so `npx` doesn't need to download it at runtime (which was failing/timing out).
+
+**6. Streaming via sync fallback.** Daytona's `exec()` doesn't always return a `cmd_id` for async log streaming. The worker falls back to synchronous processing — collecting full stdout, then parsing line by line. Real-time streaming works when `cmd_id` is available via `get_session_command_logs_async()`.
+
+See `diagrams/06-daytona-sandbox-execution.mermaid` for the full execution flow.
 
 ---
 

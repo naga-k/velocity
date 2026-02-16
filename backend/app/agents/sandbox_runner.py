@@ -176,14 +176,24 @@ async def list_linear_issues(args: dict) -> dict:
             response.raise_for_status()
             data = response.json()
 
-            issues = data.get("data", {}).get("issues", {}).get("nodes", [])
+            # Handle GraphQL errors or null data
+            if data.get("errors"):
+                error_msgs = "; ".join(e.get("message", "Unknown error") for e in data["errors"])
+                return {"content": [{"type": "text", "text": f"Linear API error: {error_msgs}"}]}
+
+            issues_data = data.get("data")
+            if not issues_data:
+                return {"content": [{"type": "text", "text": "No data returned from Linear API"}]}
+
+            issues = (issues_data.get("issues") or {}).get("nodes", [])
             if not issues:
                 return {"content": [{"type": "text", "text": "No issues found"}]}
 
-            # Format as markdown
+            # Format as markdown (include UUID so update_linear_issue can use it directly)
             lines = ["# Linear Issues\n"]
             for issue in issues:
                 lines.append(f"## {issue['identifier']}: {issue['title']}")
+                lines.append(f"- **ID (for updates)**: {issue['id']}")
                 lines.append(f"- **Status**: {issue['state']['name']}")
                 lines.append(f"- **Priority**: {issue.get('priorityLabel', 'None')}")
                 assignee = issue.get("assignee")
@@ -304,17 +314,17 @@ async def create_linear_issue(args: dict) -> dict:
 
 @tool(
     "update_linear_issue",
-    "Update an existing Linear issue",
+    "Update an existing Linear issue (status, title, description, priority)",
     {
-        "issue_id": str,
-        "title": str,
-        "description": str,
-        "priority": int,
-        "state_name": str,
+        "issue_id": str,  # Required: Linear issue UUID or identifier like VEL-25
+        "title": str,  # Optional: new title
+        "description": str,  # Optional: new description
+        "priority": int,  # Optional: 0-4 (0=No priority, 1=Urgent, 2=High, 3=Normal, 4=Low)
+        "state_name": str,  # Optional: workflow state name like "Done", "In Progress", "Todo"
     },
 )
 async def update_linear_issue(args: dict) -> dict:
-    """Update Linear issue via GraphQL mutation."""
+    """Update Linear issue via GraphQL mutation, including status changes."""
     import httpx
     import os
 
@@ -326,55 +336,153 @@ async def update_linear_issue(args: dict) -> dict:
     if not issue_id:
         return {"content": [{"type": "text", "text": "issue_id is required"}]}
 
-    mutation = """
-    mutation UpdateIssue($id: String!, $title: String, $description: String, $priority: Int) {
-      issueUpdate(id: $id, input: {
-        title: $title
-        description: $description
-        priority: $priority
-      }) {
-        success
-        issue {
-          identifier
-          title
-          url
-        }
-      }
-    }
-    """
-
-    variables = {"id": issue_id}
-    if "title" in args:
-        variables["title"] = args["title"]
-    if "description" in args:
-        variables["description"] = args["description"]
-    if "priority" in args:
-        variables["priority"] = args["priority"]
-
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.post(
+            headers = {"Authorization": linear_api_key}
+
+            # If issue_id looks like a human identifier (e.g. VEL-25), resolve to UUID
+            # UUIDs are 36 chars with hex digits; identifiers are SHORT-NUMBER
+            import re
+            is_identifier = bool(re.match(r'^[A-Za-z]+-\d+$', issue_id))
+
+            if is_identifier:
+                # Use Linear's filter API to find by identifier
+                resolve_query = """
+                query FindIssue($identifier: String!) {
+                  issues(filter: { identifier: { eq: $identifier } }, first: 1) {
+                    nodes { id identifier }
+                  }
+                }
+                """
+                resp = await client.post(
+                    "https://api.linear.app/graphql",
+                    json={"query": resolve_query, "variables": {"identifier": issue_id.upper()}},
+                    headers=headers,
+                    timeout=10.0,
+                )
+                resp.raise_for_status()
+                search_data = resp.json()
+
+                if search_data.get("errors"):
+                    # Fallback: try issueSearch if filter doesn't work
+                    fallback_query = """
+                    query SearchIssue($query: String!) {
+                      issueSearch(query: $query, first: 5) {
+                        nodes { id identifier }
+                      }
+                    }
+                    """
+                    resp = await client.post(
+                        "https://api.linear.app/graphql",
+                        json={"query": fallback_query, "variables": {"query": issue_id.upper()}},
+                        headers=headers,
+                        timeout=10.0,
+                    )
+                    resp.raise_for_status()
+                    search_data = resp.json()
+                    nodes = (search_data.get("data") or {}).get("issueSearch", {}).get("nodes", [])
+                    # Find exact match
+                    matched = [n for n in nodes if n["identifier"].upper() == issue_id.upper()]
+                    if matched:
+                        issue_id = matched[0]["id"]
+                    elif nodes:
+                        issue_id = nodes[0]["id"]
+                    else:
+                        return {"content": [{"type": "text", "text": f"Could not find issue {args.get('issue_id')}"}]}
+                else:
+                    nodes = (search_data.get("data") or {}).get("issues", {}).get("nodes", [])
+                    if nodes:
+                        issue_id = nodes[0]["id"]
+                    else:
+                        return {"content": [{"type": "text", "text": f"Could not find issue {args.get('issue_id')}"}]}
+
+            # Build the input object for the mutation
+            input_fields = {}
+            if "title" in args and args["title"]:
+                input_fields["title"] = args["title"]
+            if "description" in args and args["description"]:
+                input_fields["description"] = args["description"]
+            if "priority" in args and args["priority"] is not None:
+                input_fields["priority"] = args["priority"]
+
+            # Resolve state_name to stateId
+            state_name = args.get("state_name")
+            if state_name:
+                states_query = """
+                query {
+                  workflowStates(first: 50) {
+                    nodes { id name type }
+                  }
+                }
+                """
+                resp = await client.post(
+                    "https://api.linear.app/graphql",
+                    json={"query": states_query},
+                    headers=headers,
+                    timeout=10.0,
+                )
+                resp.raise_for_status()
+                states_data = resp.json()
+                states = (states_data.get("data") or {}).get("workflowStates", {}).get("nodes", [])
+
+                # Find matching state (case-insensitive)
+                target_state = None
+                for s in states:
+                    if s["name"].lower() == state_name.lower():
+                        target_state = s
+                        break
+
+                if target_state:
+                    input_fields["stateId"] = target_state["id"]
+                else:
+                    available = ", ".join(s["name"] for s in states)
+                    return {"content": [{"type": "text", "text": f"State '{state_name}' not found. Available: {available}"}]}
+
+            if not input_fields:
+                return {"content": [{"type": "text", "text": "No fields to update. Provide title, description, priority, or state_name."}]}
+
+            # Execute the update mutation
+            mutation = """
+            mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) {
+              issueUpdate(id: $id, input: $input) {
+                success
+                issue {
+                  identifier
+                  title
+                  state { name }
+                  url
+                }
+              }
+            }
+            """
+
+            resp = await client.post(
                 "https://api.linear.app/graphql",
-                json={"query": mutation, "variables": variables},
-                headers={"Authorization": linear_api_key},
+                json={"query": mutation, "variables": {"id": issue_id, "input": input_fields}},
+                headers=headers,
                 timeout=10.0,
             )
-            response.raise_for_status()
-            data = response.json()
+            resp.raise_for_status()
+            data = resp.json()
 
-            result = data.get("data", {}).get("issueUpdate", {})
+            if data.get("errors"):
+                error_msgs = "; ".join(e.get("message", "Unknown") for e in data["errors"])
+                return {"content": [{"type": "text", "text": f"Linear API error: {error_msgs}"}]}
+
+            result = (data.get("data") or {}).get("issueUpdate", {})
             if result.get("success"):
                 issue = result["issue"]
+                status = issue.get("state", {}).get("name", "unknown")
                 return {
                     "content": [
                         {
                             "type": "text",
-                            "text": f"Updated {issue['identifier']}: {issue['title']}\n{issue['url']}",
+                            "text": f"Updated {issue['identifier']}: {issue['title']} (status: {status})\n{issue['url']}",
                         }
                     ]
                 }
             else:
-                return {"content": [{"type": "text", "text": "Failed to update issue"}]}
+                return {"content": [{"type": "text", "text": f"Failed to update issue. Response: {data}"}]}
 
     except Exception as e:
         logger.exception("Error updating Linear issue")

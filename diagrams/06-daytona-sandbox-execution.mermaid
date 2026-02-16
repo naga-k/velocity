@@ -1,0 +1,52 @@
+sequenceDiagram
+    actor User
+    participant FE as Frontend<br/>Next.js
+    participant API as FastAPI<br/>Backend
+    participant SW as Session Worker
+    participant DM as Daytona Manager
+    participant SB as Daytona Sandbox<br/>Ephemeral
+    participant SDK as Claude Agent SDK<br/>Opus 4.6
+    participant Linear as Linear API
+    participant Slack as Slack MCP
+
+    User->>FE: Send message
+    FE->>API: POST /api/chat (SSE)
+    API->>SW: query_and_stream(message, session_id)
+
+    alt First message in session
+        SW->>DM: create_sandbox(session_id)
+        DM->>SB: Create ephemeral sandbox<br/>(daytona-small: 1 vCPU, 2GB)
+        DM->>SB: pip install claude-agent-sdk
+        DM->>SB: npm install -g server-slack
+        DM->>SB: Upload sandbox_runner.py
+        SB-->>SW: Sandbox ready
+    end
+
+    SW->>SB: Execute sandbox_runner.py<br/>--message --session-id --api-key --history
+
+    Note over SB,SDK: Inside Daytona Sandbox
+
+    SB->>SDK: ClaudeSDKClient.connect()
+    SB->>SDK: client.query(message)
+
+    SDK->>SDK: Orchestrator plans execution
+
+    par Subagent execution
+        SDK->>Linear: list_linear_issues (GraphQL)
+        Linear-->>SDK: Issue data
+        SDK->>SB: stdout: {"type":"tool_call",...}
+    and
+        SDK->>Slack: message_search (MCP stdio)
+        Slack-->>SDK: Slack messages
+        SDK->>SB: stdout: {"type":"agent_activity",...}
+    end
+
+    SDK->>SB: stdout: {"type":"text_delta","text":"..."}<br/>(streaming)
+    SDK->>SB: stdout: {"type":"done",...}
+
+    Note over SW,SB: Real-time stdout streaming
+
+    SB-->>SW: JSON lines on stdout
+    SW-->>API: SDK message objects via queue
+    API-->>FE: SSE events (text, thinking, tool_call, done)
+    FE-->>User: Rendered response

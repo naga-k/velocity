@@ -109,6 +109,8 @@ class DaytonaSandboxManager:
         # Everything else is pre-installed in the default snapshot
         setup_commands = [
             "pip install --quiet anthropic httpx git+https://github.com/naga-k/claude-agent-sdk-python.git@fix/558-message-buffer-deadlock",
+            # Pre-install Slack MCP server so npx doesn't need to download it at runtime
+            "npm install -g @modelcontextprotocol/server-slack 2>/dev/null || true",
         ]
 
         for cmd in setup_commands:
