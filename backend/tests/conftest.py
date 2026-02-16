@@ -216,8 +216,82 @@ async def _mock_receive_response(messages):
 
 
 @pytest.fixture
+def mock_daytona_sandbox():
+    """Mock Daytona sandbox for testing sandbox-based session worker.
+
+    Simulates sandbox creation, script upload, and command execution that emits
+    JSON lines to stdout (matching sandbox_runner.py output format).
+
+    Yields a dict with a helper to set stdout lines for testing different scenarios.
+
+    Usage:
+        def test_chat(mock_daytona_sandbox):
+            mock_daytona_sandbox["set_stdout_lines"]([
+                '{"type": "text_delta", "text": "Hello from sandbox"}',
+                '{"type": "done", "tokens_used": {"input": 25, "output": 10}, "agents_used": []}',
+            ])
+    """
+    import app.daytona_manager as dm_mod
+    import app.agents.session_worker as worker_mod
+
+    # Default stdout lines (matching sandbox_runner.py output)
+    mock_stdout_lines = [
+        '{"type": "text_delta", "text": "Hello"}',
+        '{"type": "text_delta", "text": " from"}',
+        '{"type": "text_delta", "text": " sandbox!"}',
+        '{"type": "done", "tokens_used": {"input": 25, "output": 10}, "agents_used": []}',
+    ]
+
+    async def mock_create_sandbox(session_id, env_vars=None):
+        """Mock sandbox creation - returns a fake sandbox object."""
+        mock_sandbox = MagicMock()
+        mock_sandbox.id = f"sandbox-{session_id}"
+        mock_sandbox.fs = MagicMock()
+        mock_sandbox.process = MagicMock()
+        mock_sandbox.code_interpreter = MagicMock()
+        return mock_sandbox
+
+    async def mock_upload_script(session_id, script_content, remote_path):
+        """Mock script upload - always succeeds."""
+        return True
+
+    async def mock_execute_streaming(session_id, command, on_stdout, on_stderr=None, timeout=600):
+        """Mock command execution - streams JSON lines to on_stdout callback."""
+        # Simulate streaming each JSON line
+        for line in mock_stdout_lines:
+            await on_stdout(line)
+        return {"exit_code": 0, "timed_out": False, "error": None}
+
+    async def mock_cleanup_sandbox(session_id):
+        """Mock sandbox cleanup - no-op."""
+        pass
+
+    def set_stdout_lines(lines):
+        """Helper to set custom stdout lines for test scenarios."""
+        nonlocal mock_stdout_lines
+        mock_stdout_lines = lines
+
+    with patch.object(dm_mod.sandbox_manager, "create_sandbox", side_effect=mock_create_sandbox):
+        with patch.object(dm_mod.sandbox_manager, "upload_script", side_effect=mock_upload_script):
+            with patch.object(dm_mod.sandbox_manager, "execute_streaming", side_effect=mock_execute_streaming):
+                with patch.object(dm_mod.sandbox_manager, "cleanup_sandbox", side_effect=mock_cleanup_sandbox):
+                    # Clear worker pool before test
+                    worker_mod._workers.clear()
+                    worker_mod._worker_locks.clear()
+
+                    yield {"set_stdout_lines": set_stdout_lines}
+
+                    # Clear worker pool after test
+                    worker_mod._workers.clear()
+                    worker_mod._worker_locks.clear()
+
+
+@pytest.fixture
 def mock_agent_sdk():
     """Patch ClaudeSDKClient to return canned responses.
+
+    NOTE: This fixture is DEPRECATED for Daytona sandbox architecture.
+    Use mock_daytona_sandbox instead for new tests.
 
     Yields a dict with the mock client and helper to set response messages.
 
@@ -249,24 +323,106 @@ def mock_agent_sdk():
         )
 
     import app.agents.session_worker as worker_mod
+    import app.daytona_manager as dm_mod
 
-    with patch("app.agents.session_worker.ClaudeSDKClient", return_value=mock_client):
-        with patch("app.agents.orchestrator.settings") as mock_settings:
-            mock_settings.anthropic_configured = True
-            mock_settings.anthropic_api_key = "test-key"
-            mock_settings.anthropic_model_opus = "claude-opus-4-6"
-            mock_settings.anthropic_model_sonnet = "claude-sonnet-4-5-20250929"
-            mock_settings.slack_configured = False
-            mock_settings.linear_configured = False
-            mock_settings.slack_bot_token = ""
-            mock_settings.linear_api_key = ""
-            mock_settings.max_budget_per_session_usd = 2.0
-            mock_settings.max_turns = 30
-            worker_mod._workers.clear()
-            worker_mod._worker_locks.clear()
-            yield {
-                "client": mock_client,
-                "set_messages": set_messages,
-            }
-            worker_mod._workers.clear()
-            worker_mod._worker_locks.clear()
+    # NOTE: ClaudeSDKClient no longer exists in session_worker (uses Daytona now)
+    # Instead, mock the Daytona sandbox manager
+    mock_sandbox = MagicMock(id="test-sandbox")
+
+    async def mock_create_sandbox(session_id, env_vars=None):
+        return mock_sandbox
+
+    async def mock_get_sandbox(session_id):
+        return mock_sandbox
+
+    async def mock_upload_script(session_id, script_content, remote_path):
+        return True
+
+    async def mock_execute_streaming(session_id, command, on_stdout, on_stderr=None, timeout=600):
+        # Emit JSON events to stdout callback to simulate sandbox output
+        # This mimics the deduplication logic in sandbox_runner.py
+        agents_used = []
+        has_streamed_text = False  # Track if we've emitted text via StreamEvent deltas
+        inside_tool_call = False
+
+        for msg in messages:
+            if hasattr(msg, 'event'):  # StreamEvent
+                # Filter subagent text (parent_tool_use_id is set)
+                if hasattr(msg, 'parent_tool_use_id') and msg.parent_tool_use_id:
+                    continue  # Skip subagent text
+
+                event = msg.event
+                if event.get('type') == 'content_block_delta':
+                    delta = event.get('delta', {})
+                    if delta.get('type') == 'text_delta':
+                        has_streamed_text = True  # Mark that we've streamed text
+                        json_event = json.dumps({"type": "text_delta", "text": delta['text']})
+                        await on_stdout(json_event)
+                    elif delta.get('type') == 'thinking_delta':
+                        json_event = json.dumps({"type": "thinking_delta", "text": delta.get('thinking', '')})
+                        await on_stdout(json_event)
+            elif hasattr(msg, 'content'):  # AssistantMessage
+                inside_tool_call = False
+                for block in msg.content:
+                    if hasattr(block, 'name'):  # ToolUseBlock
+                        inside_tool_call = True
+                        has_streamed_text = False  # Reset for next segment
+                        if block.name == "Task":
+                            # Subagent invocation
+                            agent_type = block.input.get('subagent_type', 'unknown')
+                            description = block.input.get('description', '')
+                            agents_used.append(agent_type)
+                            json_event = json.dumps({
+                                "type": "agent_activity",
+                                "agent": agent_type,
+                                "task": description,
+                                "status": "running"
+                            })
+                            await on_stdout(json_event)
+                        else:
+                            # Regular tool call
+                            json_event = json.dumps({
+                                "type": "tool_call",
+                                "tool": block.name,
+                                "params": block.input
+                            })
+                            await on_stdout(json_event)
+                    elif hasattr(block, 'text'):  # TextBlock
+                        # Emit only if no deltas were streamed for this segment
+                        # (avoids duplicate text after StreamEvent deltas)
+                        if not has_streamed_text and not inside_tool_call:
+                            json_event = json.dumps({"type": "text_delta", "text": block.text})
+                            await on_stdout(json_event)
+            elif hasattr(msg, 'usage'):  # ResultMessage
+                json_event = json.dumps({
+                    "type": "done",
+                    "tokens_used": msg.usage or {"input": 0, "output": 0},
+                    "agents_used": list(set(agents_used))
+                })
+                await on_stdout(json_event)
+        return {"exit_code": 0, "timed_out": False, "error": None}
+
+    with patch.object(dm_mod.sandbox_manager, "create_sandbox", side_effect=mock_create_sandbox):
+        with patch.object(dm_mod.sandbox_manager, "get_sandbox", side_effect=mock_get_sandbox):
+            with patch.object(dm_mod.sandbox_manager, "upload_script", side_effect=mock_upload_script):
+                with patch.object(dm_mod.sandbox_manager, "execute_streaming", side_effect=mock_execute_streaming):
+                    with patch.object(dm_mod.sandbox_manager, "cleanup_sandbox", new_callable=AsyncMock):
+                        with patch("app.agents.orchestrator.settings") as mock_settings:
+                            mock_settings.anthropic_configured = True
+                            mock_settings.anthropic_api_key = "test-key"
+                            mock_settings.anthropic_model_opus = "claude-opus-4-6"
+                            mock_settings.anthropic_model_sonnet = "claude-sonnet-4-5-20250929"
+                            mock_settings.slack_configured = False
+                            mock_settings.linear_configured = False
+                            mock_settings.slack_bot_token = ""
+                            mock_settings.linear_api_key = ""
+                            mock_settings.max_budget_per_session_usd = 2.0
+                            mock_settings.max_turns = 30
+                            worker_mod._workers.clear()
+                            worker_mod._worker_locks.clear()
+                            yield {
+                                "client": mock_client,
+                                "set_messages": set_messages,
+                            }
+                            worker_mod._workers.clear()
+                            worker_mod._worker_locks.clear()

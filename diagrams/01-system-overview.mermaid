@@ -3,34 +3,35 @@ graph TB
         ChatUI["Chat Interface"]
         AgentStream["Agent Activity Stream"]
         SourceCards["Source Cards & Citations"]
-        IntPanel["Integration Status Panel"]
     end
 
     subgraph Backend["Backend · FastAPI + Python"]
         API["API Gateway"]
         SessionMgr["Session Manager"]
+        DaytonaMgr["Daytona Manager"]
 
-        subgraph AgentLayer["Agent Layer · Claude Agent SDK"]
-            Orchestrator["Orchestrator Agent · Opus 4.6"]
+        subgraph DaytonaSandbox["Daytona Sandbox · Ephemeral per session"]
+            SandboxRunner["sandbox_runner.py"]
 
-            subgraph Subagents["Subagents"]
-                Research["Research Agent · Sonnet 4.5"]
-                Backlog["Backlog Agent · Sonnet 4.5"]
-                Prioritization["Prioritization Agent · Opus 4.6"]
-                DocWriter["Doc Agent · Opus 4.6"]
+            subgraph AgentLayer["Agent Layer · Claude Agent SDK"]
+                Orchestrator["Orchestrator Agent · Opus 4.6"]
+
+                subgraph Subagents["Subagents"]
+                    Research["Research Agent · Sonnet 4.5"]
+                    Backlog["Backlog Agent · Sonnet 4.5"]
+                    Prioritization["Prioritization Agent · Opus 4.6"]
+                    DocWriter["Doc Agent · Opus 4.6"]
+                end
+            end
+
+            subgraph MCPLayer["MCP Integration Layer"]
+                SlackMCP["Slack MCP · stdio"]
+                PMTools["PM Tools · in-process"]
             end
         end
 
-        subgraph MCPLayer["MCP Integration Layer"]
-            SlackMCP["Slack MCP"]
-            LinearMCP["Linear MCP"]
-            NotionMCP["Notion MCP"]
-            WebMCP["Web Search MCP"]
-        end
-
         subgraph Persistence["Persistence Layer"]
-            Redis["Redis · Session state + cache"]
-            SQLite["SQLite · History + configs"]
+            Redis["Redis · Session cache"]
             Memory["File Memory · Product knowledge"]
         end
     end
@@ -38,36 +39,33 @@ graph TB
     subgraph External["External Services"]
         SlackAPI["Slack API"]
         LinearAPI["Linear API"]
-        NotionAPI["Notion API"]
-        BraveAPI["Brave/Tavily API"]
+        DaytonaAPI["Daytona Cloud"]
         ClaudeAPI["Anthropic API · Opus 4.6 + Sonnet 4.5"]
     end
 
     ChatUI -->|SSE| API
     AgentStream -->|SSE| API
     API --> SessionMgr
-    SessionMgr --> Orchestrator
+    SessionMgr --> DaytonaMgr
+    DaytonaMgr -->|Create/Manage| DaytonaSandbox
+    DaytonaMgr --> DaytonaAPI
+    SandboxRunner --> Orchestrator
     Orchestrator --> Research
     Orchestrator --> Backlog
     Orchestrator --> Prioritization
     Orchestrator --> DocWriter
 
     Research --> SlackMCP
-    Research --> WebMCP
-    Backlog --> LinearMCP
-    DocWriter --> NotionMCP
+    Backlog --> PMTools
+    PMTools -->|GraphQL| LinearAPI
 
     SlackMCP --> SlackAPI
-    LinearMCP --> LinearAPI
-    NotionMCP --> NotionAPI
-    WebMCP --> BraveAPI
 
     Orchestrator --> ClaudeAPI
     Research --> ClaudeAPI
     Backlog --> ClaudeAPI
 
     SessionMgr --> Redis
-    SessionMgr --> SQLite
     Orchestrator --> Memory
 
     style Orchestrator fill:#7c3aed,color:#fff,stroke:#5b21b6
@@ -76,3 +74,6 @@ graph TB
     style Prioritization fill:#7c3aed,color:#fff,stroke:#5b21b6
     style DocWriter fill:#7c3aed,color:#fff,stroke:#5b21b6
     style ClaudeAPI fill:#d97706,color:#fff,stroke:#b45309
+    style DaytonaSandbox fill:#f0fdf4,stroke:#16a34a
+    style DaytonaMgr fill:#16a34a,color:#fff,stroke:#15803d
+    style DaytonaAPI fill:#16a34a,color:#fff,stroke:#15803d

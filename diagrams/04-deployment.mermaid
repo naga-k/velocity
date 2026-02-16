@@ -17,6 +17,21 @@ graph TB
         BELocal --> MemoryVol
     end
 
+    subgraph DaytonaCloud["Daytona Cloud · Sandbox Execution"]
+        direction TB
+        DaytonaAPI["Daytona API"]
+
+        subgraph Sandboxes["Ephemeral Sandboxes"]
+            SB1["Session 1 · 1 vCPU, 2GB"]
+            SB2["Session 2 · 1 vCPU, 2GB"]
+            SBN["Session N..."]
+        end
+
+        DaytonaAPI --> SB1
+        DaytonaAPI --> SB2
+        DaytonaAPI --> SBN
+    end
+
     subgraph Cloud["Cloud · Hackathon Demo"]
         direction TB
 
@@ -36,10 +51,15 @@ graph TB
         LinearExt["Linear API"]
     end
 
+    BELocal -->|Create sandboxes| DaytonaCloud
+    Railway -->|Create sandboxes| DaytonaCloud
+    DaytonaCloud --> APIs
     BELocal --> APIs
     Railway --> APIs
 
     style Local fill:#f0fdf4,stroke:#16a34a
     style Cloud fill:#eff6ff,stroke:#2563eb
+    style DaytonaCloud fill:#fefce8,stroke:#ca8a04
     style Vercel fill:#000,color:#fff
     style Railway fill:#7c3aed,color:#fff
+    style DaytonaAPI fill:#16a34a,color:#fff,stroke:#15803d
