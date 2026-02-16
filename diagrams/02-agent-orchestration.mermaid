@@ -6,59 +6,89 @@ sequenceDiagram
     participant RA as Research Agent Sonnet
     participant BA as Backlog Agent Sonnet
     participant PA as Prioritization Agent Opus
-    participant Slack as Slack MCP
-    participant Linear as Linear MCP
+    participant DW as Doc Writer Agent Opus
+    participant Slack as Slack API
+    participant Linear as Linear API
+    participant Amp as Amplitude
+    participant Notion as Notion
+    participant GH as GitHub API
     participant Mem as Memory
 
-    User->>FE: What should we prioritize next sprint?
+    User->>FE: What's the highest-impact feature to build next?
     FE->>API: POST /api/chat
     API->>Orch: message + session context
 
-    Note over Orch: STEP 1 Classify intent → prioritization
-
-    Note over Orch: STEP 2 Plan → research + backlog parallel then prioritize
+    Note over Orch: STEP 1 — Plan: gather data from all sources
 
     Orch->>FE: SSE thinking
 
-    par Parallel execution
-        Orch->>RA: Find feedback and discussions
+    par Parallel data gathering
+        Orch->>RA: Search Slack + Amplitude + Notion
         RA->>FE: SSE agent_activity research running
-        RA->>Slack: slack_search sprint priorities
-        Slack-->>RA: 8 relevant messages
-        RA->>Slack: slack_search user feedback
-        Slack-->>RA: 5 feedback items
-        RA-->>Orch: Research Brief JSON
+        RA->>Slack: slack_get_channel_history #product
+        Slack-->>RA: Recent discussions
+        RA->>Amp: get_amplitude_metrics engagement
+        Amp-->>RA: DAU, retention, funnel data
+        RA->>Notion: search_notion roadmap
+        Notion-->>RA: Q1 roadmap + strategy
+        RA-->>Orch: Research brief
         RA->>FE: SSE agent_activity research completed
 
     and
-        Orch->>BA: Get current project state
+        Orch->>BA: Get Linear backlog state
         BA->>FE: SSE agent_activity backlog running
-        BA->>Linear: list_issues todo + in_progress
-        Linear-->>BA: 23 tickets
-        BA->>Linear: get_current_cycle
-        Linear-->>BA: Sprint data + velocity
-        BA-->>Orch: Backlog State JSON
+        BA->>Linear: list_linear_issues
+        Linear-->>BA: 24 tickets with status
+        BA->>Amp: get_amplitude_metrics conversion
+        Amp-->>BA: Funnel drop-off data
+        BA-->>Orch: Backlog state
         BA->>FE: SSE agent_activity backlog completed
     end
 
-    Note over Orch: STEP 3 Sequential — needs both results
+    Note over Orch: STEP 2 — Synthesize + recommend
 
-    Orch->>PA: Rank priorities + research + backlog
-    PA->>FE: SSE agent_activity prioritization running
-    Note over PA: RICE scoring + cross-reference evidence
-    PA-->>Orch: Ranked list with evidence
-    PA->>FE: SSE agent_activity prioritization completed
-
-    Note over Orch: STEP 4 Synthesize final response
-
-    Orch->>FE: SSE text streaming
-    Orch->>FE: SSE citation Slack source
-    Orch->>FE: SSE citation Linear source
-    Orch->>FE: SSE text streaming
-
-    Note over Orch: STEP 5 Update memory
-
-    Orch->>Mem: Write insights + decision context
+    Orch->>FE: SSE text streaming (metrics + recommendation)
     Orch->>FE: SSE done
 
-    FE->>User: Rendered response with source cards
+    User->>FE: Write PRD, publish Gist, create Linear issue, post to Slack
+    FE->>API: POST /api/chat
+
+    Note over Orch: STEP 3 — Generate PRD + take actions
+
+    Orch->>DW: Write PRD + publish + create issue + notify
+    DW->>FE: SSE agent_activity doc-writer running
+    DW->>Amp: get_amplitude_metrics (data for PRD)
+    Amp-->>DW: Metrics
+    DW->>GH: create_document_gist (full PRD)
+    GH-->>DW: Gist URL
+    DW->>Linear: create_linear_issue (set In Progress)
+    Linear-->>DW: VEL-XX created
+    DW->>Slack: slack_post_message #product
+    Slack-->>DW: Posted
+    DW-->>Orch: PRD + Gist URL + Linear URL + Slack confirmation
+    DW->>FE: SSE agent_activity doc-writer completed
+
+    Orch->>FE: SSE text streaming (PRD + links)
+    Orch->>FE: SSE done
+
+    User->>FE: Generate code, create PR, mark done, notify engineering
+    FE->>API: POST /api/chat
+
+    Note over Orch: STEP 4 — Code gen + close the loop
+
+    Orch->>DW: Generate code + PR + update Linear + notify
+    DW->>FE: SSE agent_activity doc-writer running
+    DW->>GH: generate_code_pr
+    GH-->>DW: PR #13 URL
+    DW->>Linear: update_linear_issue (status: Done)
+    Linear-->>DW: Updated
+    DW->>Slack: slack_post_message #engineering
+    Slack-->>DW: Posted
+    DW-->>Orch: PR + status update + notification
+    DW->>FE: SSE agent_activity doc-writer completed
+
+    Orch->>FE: SSE text streaming (PR link + confirmations)
+    Orch->>Mem: Save decision context
+    Orch->>FE: SSE done
+
+    FE->>User: Full loop: insight → PRD → code → shipped

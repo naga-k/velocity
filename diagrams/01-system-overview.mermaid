@@ -2,7 +2,7 @@ graph TB
     subgraph Frontend["Frontend · Next.js + Tailwind + shadcn/ui"]
         ChatUI["Chat Interface"]
         AgentStream["Agent Activity Stream"]
-        SourceCards["Source Cards & Citations"]
+        ToolCards["Tool Call Cards"]
     end
 
     subgraph Backend["Backend · FastAPI + Python"]
@@ -20,13 +20,18 @@ graph TB
                     Research["Research Agent · Sonnet 4.5"]
                     Backlog["Backlog Agent · Sonnet 4.5"]
                     Prioritization["Prioritization Agent · Opus 4.6"]
-                    DocWriter["Doc Agent · Opus 4.6"]
+                    DocWriter["Doc Writer Agent · Opus 4.6"]
                 end
             end
 
-            subgraph MCPLayer["MCP Integration Layer"]
-                SlackMCP["Slack MCP · stdio"]
-                PMTools["PM Tools · in-process"]
+            subgraph Tools["15+ Tools · MCP + Custom"]
+                SlackTools["Slack Tools · search, history, post"]
+                LinearTools["Linear Tools · list, create, update"]
+                AmplitudeTools["Amplitude · engagement, retention, growth"]
+                NotionTools["Notion · roadmap, strategy, sprints"]
+                GistTools["GitHub Gist · publish documents"]
+                CodeGenTools["Code Gen · generate PR"]
+                MemoryTools["PM Memory · read context, save insights"]
             end
         end
 
@@ -39,12 +44,15 @@ graph TB
     subgraph External["External Services"]
         SlackAPI["Slack API"]
         LinearAPI["Linear API"]
+        GitHubAPI["GitHub API"]
+        AmplitudeAPI["Amplitude"]
         DaytonaAPI["Daytona Cloud"]
         ClaudeAPI["Anthropic API · Opus 4.6 + Sonnet 4.5"]
     end
 
     ChatUI -->|SSE| API
     AgentStream -->|SSE| API
+    ToolCards -->|SSE| API
     API --> SessionMgr
     SessionMgr --> DaytonaMgr
     DaytonaMgr -->|Create/Manage| DaytonaSandbox
@@ -55,18 +63,27 @@ graph TB
     Orchestrator --> Prioritization
     Orchestrator --> DocWriter
 
-    Research --> SlackMCP
-    Backlog --> PMTools
-    PMTools -->|GraphQL| LinearAPI
+    Research --> SlackTools
+    Research --> AmplitudeTools
+    Research --> NotionTools
+    Backlog --> LinearTools
+    Backlog --> AmplitudeTools
+    DocWriter --> GistTools
+    DocWriter --> CodeGenTools
+    DocWriter --> LinearTools
+    DocWriter --> SlackTools
 
-    SlackMCP --> SlackAPI
+    SlackTools --> SlackAPI
+    LinearTools -->|GraphQL| LinearAPI
+    GistTools --> GitHubAPI
+    AmplitudeTools --> AmplitudeAPI
 
     Orchestrator --> ClaudeAPI
     Research --> ClaudeAPI
     Backlog --> ClaudeAPI
 
     SessionMgr --> Redis
-    Orchestrator --> Memory
+    MemoryTools --> Memory
 
     style Orchestrator fill:#7c3aed,color:#fff,stroke:#5b21b6
     style Research fill:#0ea5e9,color:#fff,stroke:#0284c7
@@ -77,3 +94,7 @@ graph TB
     style DaytonaSandbox fill:#f0fdf4,stroke:#16a34a
     style DaytonaMgr fill:#16a34a,color:#fff,stroke:#15803d
     style DaytonaAPI fill:#16a34a,color:#fff,stroke:#15803d
+    style SlackAPI fill:#4a154b,color:#fff,stroke:#3b1040
+    style LinearAPI fill:#5e6ad2,color:#fff,stroke:#4954b8
+    style GitHubAPI fill:#333,color:#fff,stroke:#222
+    style AmplitudeAPI fill:#1d2026,color:#fff,stroke:#14161a
